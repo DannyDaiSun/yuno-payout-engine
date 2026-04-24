@@ -130,6 +130,102 @@ func TestSettledSinceReturnsMatchedTxns(t *testing.T) {
 	}
 }
 
+// TestExpectedCashEmptyReturnsEmptyGroups verifies that with an empty store,
+// ExpectedCashByAcquirer still returns a fully-populated ByAcquirer slice
+// (one entry per acquirer constant) with each NetAmount = "0.00" and Total
+// = "0.00". This guarantees the JSON shape never has a null slice and the
+// caller can rely on the three-acquirer breakdown always being present.
+func TestExpectedCashEmptyReturnsEmptyGroups(t *testing.T) {
+	q := New(store.New())
+	res := q.ExpectedCashByAcquirer(time.Date(2026, 4, 24, 0, 0, 0, 0, domain.BangkokTZ()))
+
+	if res.ByAcquirer == nil {
+		t.Fatalf("ByAcquirer must not be nil (would marshal to null)")
+	}
+	if len(res.ByAcquirer) != 3 {
+		t.Fatalf("expected 3 acquirer entries, got %d", len(res.ByAcquirer))
+	}
+	wantAcquirers := map[domain.Acquirer]bool{
+		domain.AcquirerThai:   false,
+		domain.AcquirerGlobal: false,
+		domain.AcquirerPrompt: false,
+	}
+	for _, item := range res.ByAcquirer {
+		seen, known := wantAcquirers[item.Acquirer]
+		if !known {
+			t.Fatalf("unexpected acquirer in result: %s", item.Acquirer)
+		}
+		if seen {
+			t.Fatalf("duplicate acquirer in result: %s", item.Acquirer)
+		}
+		wantAcquirers[item.Acquirer] = true
+		if item.NetAmount != "0.00" {
+			t.Fatalf("acquirer %s: NetAmount=%q, want \"0.00\"", item.Acquirer, item.NetAmount)
+		}
+	}
+	for acq, seen := range wantAcquirers {
+		if !seen {
+			t.Fatalf("missing acquirer in result: %s", acq)
+		}
+	}
+	if res.Total != "0.00" {
+		t.Fatalf("Total: got %q, want \"0.00\"", res.Total)
+	}
+}
+
+// TestUnsettledSinceFiltersByDays verifies the days-window filter excludes
+// transactions whose TransactionDate is older than asOf - days, while
+// including those within the window.
+func TestUnsettledSinceFiltersByDays(t *testing.T) {
+	bk := domain.BangkokTZ()
+	asOf := time.Date(2026, 4, 23, 12, 0, 0, 0, bk)
+	asOfDay := domain.BangkokMidnight(asOf)
+
+	s := store.New()
+	mkTxn := func(id string, daysAgo int) {
+		txnDate := asOfDay.AddDate(0, 0, -daysAgo)
+		s.SaveTransaction(domain.Transaction{
+			ID:                 id,
+			Acquirer:           domain.AcquirerThai,
+			AmountMinor:        10000,
+			Currency:           "THB",
+			TransactionDate:    txnDate,
+			PaymentMethod:      domain.MethodCreditCard,
+			// Past expected settle date so they are overdue (unsettled, not pending).
+			ExpectedSettleDate: txnDate.AddDate(0, 0, 1),
+		})
+	}
+	mkTxn("T_RECENT", 1)  // within 7-day window
+	mkTxn("T_MID", 5)     // within 7-day window
+	mkTxn("T_OLD", 30)    // outside 7-day window
+
+	q := New(s)
+	res, err := q.UnsettledSince(7, asOf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := make(map[string]bool, len(res.UnsettledTransactions))
+	for _, u := range res.UnsettledTransactions {
+		got[u.ID] = true
+	}
+	if !got["T_RECENT"] {
+		t.Fatalf("expected T_RECENT (1 day old) in window, got %+v", res.UnsettledTransactions)
+	}
+	if !got["T_MID"] {
+		t.Fatalf("expected T_MID (5 days old) in window, got %+v", res.UnsettledTransactions)
+	}
+	if got["T_OLD"] {
+		t.Fatalf("expected T_OLD (30 days old) excluded from 7-day window, got %+v", res.UnsettledTransactions)
+	}
+	if res.Total != 2 {
+		t.Fatalf("Total: got %d, want 2", res.Total)
+	}
+	if len(res.UnsettledTransactions) != 2 {
+		t.Fatalf("len(UnsettledTransactions): got %d, want 2", len(res.UnsettledTransactions))
+	}
+}
+
 func TestFeesUsesBangkokMonthBoundaries(t *testing.T) {
 	s := store.New()
 	bk := domain.BangkokTZ()

@@ -157,3 +157,95 @@ func TestStoreFindSettlementReturnsFalseWhenMissing(t *testing.T) {
 		t.Fatalf("expected zero-value SettlementRecord for missing settlement, got %+v", got)
 	}
 }
+
+// TestStoreReturnedSlicesDoNotMutateInternal verifies that mutating the slice
+// returned by ListTransactions / ListSettlements does not affect subsequent
+// calls. This proves the store returns defensive snapshots (new backing array
+// per call), not direct references to internal state.
+func TestStoreReturnedSlicesDoNotMutateInternal(t *testing.T) {
+	s := New()
+	bk := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+
+	// Seed two transactions so we can verify by ID set, not by position
+	// (map iteration order is non-deterministic).
+	originalTxns := map[string]int64{
+		"T1": 10000,
+		"T2": 20000,
+	}
+	for id, amt := range originalTxns {
+		s.SaveTransaction(domain.Transaction{
+			ID:                 id,
+			Acquirer:           domain.AcquirerThai,
+			AmountMinor:        amt,
+			Currency:           "THB",
+			TransactionDate:    bk,
+			PaymentMethod:      domain.MethodCreditCard,
+			ExpectedSettleDate: bk.Add(24 * time.Hour),
+		})
+	}
+	originalSettlements := map[string]int64{
+		"T1": 9900,
+		"T2": 19800,
+	}
+	for id, net := range originalSettlements {
+		s.SaveSettlement(domain.SettlementRecord{
+			TransactionID:  id,
+			Acquirer:       domain.AcquirerThai,
+			GrossMinor:     net + 100,
+			FeeMinor:       100,
+			NetMinor:       net,
+			Currency:       "THB",
+			SettlementDate: bk.Add(24 * time.Hour),
+			PaymentMethod:  domain.MethodCreditCard,
+		})
+	}
+
+	// Mutate the returned slice aggressively: overwrite element 0 and clear all.
+	first := s.ListTransactions()
+	if len(first) != 2 {
+		t.Fatalf("expected 2 txns in first list, got %d", len(first))
+	}
+	first[0] = domain.Transaction{ID: "MUTATED", AmountMinor: -1}
+	for i := range first {
+		first[i] = domain.Transaction{}
+	}
+
+	// Second call must return original data unaffected.
+	second := s.ListTransactions()
+	if len(second) != 2 {
+		t.Fatalf("expected 2 txns in second list, got %d", len(second))
+	}
+	for _, txn := range second {
+		want, ok := originalTxns[txn.ID]
+		if !ok {
+			t.Fatalf("unexpected txn ID in second list: %q (mutation leaked into store)", txn.ID)
+		}
+		if txn.AmountMinor != want {
+			t.Fatalf("txn %s: amount=%d, want %d (mutation leaked into store)", txn.ID, txn.AmountMinor, want)
+		}
+	}
+
+	// Same drill for settlements.
+	firstS := s.ListSettlements()
+	if len(firstS) != 2 {
+		t.Fatalf("expected 2 settlements in first list, got %d", len(firstS))
+	}
+	firstS[0] = domain.SettlementRecord{TransactionID: "MUTATED", NetMinor: -1}
+	for i := range firstS {
+		firstS[i] = domain.SettlementRecord{}
+	}
+
+	secondS := s.ListSettlements()
+	if len(secondS) != 2 {
+		t.Fatalf("expected 2 settlements in second list, got %d", len(secondS))
+	}
+	for _, r := range secondS {
+		want, ok := originalSettlements[r.TransactionID]
+		if !ok {
+			t.Fatalf("unexpected settlement TxnID in second list: %q (mutation leaked into store)", r.TransactionID)
+		}
+		if r.NetMinor != want {
+			t.Fatalf("settlement %s: net=%d, want %d (mutation leaked into store)", r.TransactionID, r.NetMinor, want)
+		}
+	}
+}

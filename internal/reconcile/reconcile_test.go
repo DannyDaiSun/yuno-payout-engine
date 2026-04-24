@@ -288,6 +288,86 @@ func TestReconcileFlagsTripleDuplicateOnce(t *testing.T) {
 	}
 }
 
+// TestReconcileCarriesGrossFeeNet ensures the matched settlement attached to
+// a reconciled transaction carries the original GrossMinor / FeeMinor /
+// NetMinor values intact (not nil, not zeroed).
+func TestReconcileCarriesGrossFeeNet(t *testing.T) {
+	asOf := time.Date(2026, 4, 24, 12, 0, 0, 0, domain.BangkokTZ())
+	txn := domain.Transaction{
+		ID:                 "T1",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        100000,
+		Currency:           "THB",
+		TransactionDate:    asOf.Add(-24 * time.Hour),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: asOf.Add(-1 * time.Hour),
+	}
+	settlement := domain.SettlementRecord{
+		TransactionID:  "T1",
+		Acquirer:       domain.AcquirerThai,
+		GrossMinor:     100000,
+		FeeMinor:       2500,
+		NetMinor:       97500,
+		Currency:       "THB",
+		SettlementDate: asOf,
+		PaymentMethod:  domain.MethodCreditCard,
+	}
+
+	res := Reconcile([]domain.Transaction{txn}, []domain.SettlementRecord{settlement}, asOf)
+
+	if len(res.Reconciled) != 1 {
+		t.Fatalf("expected 1 reconciled txn, got %d", len(res.Reconciled))
+	}
+	r := res.Reconciled[0]
+	if r.Settlement == nil {
+		t.Fatalf("expected settlement attached for T1, got nil")
+	}
+	if r.Settlement.GrossMinor != 100000 {
+		t.Fatalf("GrossMinor: got %d, want 100000", r.Settlement.GrossMinor)
+	}
+	if r.Settlement.FeeMinor != 2500 {
+		t.Fatalf("FeeMinor: got %d, want 2500", r.Settlement.FeeMinor)
+	}
+	if r.Settlement.NetMinor != 97500 {
+		t.Fatalf("NetMinor: got %d, want 97500", r.Settlement.NetMinor)
+	}
+}
+
+// TestReconcileAsOfBeforeTxnDoesNotMarkOverdue covers the edge case where the
+// transaction date itself is in the future relative to asOf. Because status is
+// driven by ExpectedSettleDate vs asOf (not TransactionDate vs asOf), an
+// expected settle date strictly after asOf must mark the txn pending — never
+// overdue — even if the underlying transaction date is also after asOf.
+func TestReconcileAsOfBeforeTxnDoesNotMarkOverdue(t *testing.T) {
+	bk := domain.BangkokTZ()
+	asOf := time.Date(2026, 4, 23, 12, 0, 0, 0, bk)
+	txn := domain.Transaction{
+		ID:                 "T_FUTURE",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        50000,
+		Currency:           "THB",
+		TransactionDate:    time.Date(2026, 4, 25, 0, 0, 0, 0, bk),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: time.Date(2026, 4, 26, 0, 0, 0, 0, bk),
+	}
+
+	res := Reconcile([]domain.Transaction{txn}, nil, asOf)
+
+	if len(res.Reconciled) != 1 {
+		t.Fatalf("expected 1 reconciled txn, got %d", len(res.Reconciled))
+	}
+	r := res.Reconciled[0]
+	if r.Status != domain.StatusPending {
+		t.Fatalf("expected status pending (expected > asOf), got %s", r.Status)
+	}
+	if r.Status == domain.StatusOverdue {
+		t.Fatalf("must not be overdue when expected settle date is after asOf")
+	}
+	if r.Settlement != nil {
+		t.Fatalf("expected nil settlement for unmatched txn, got %+v", r.Settlement)
+	}
+}
+
 func TestReconcileFlagsAmountMismatch(t *testing.T) {
 	asOf := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
 	txn := domain.Transaction{
