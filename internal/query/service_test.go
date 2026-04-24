@@ -70,3 +70,50 @@ func TestFeesByAcquirerForMonth(t *testing.T) {
 		t.Errorf("got total %q, want 25.00", res.Total)
 	}
 }
+
+// TestFeesUsesBangkokMonthBoundaries verifies month aggregation uses Bangkok
+// timezone, not UTC. Two records straddle the April->May boundary in Bangkok:
+// Record A is April 30 23:30 BKK (= April 30 16:30 UTC) -- counts as April.
+// Record B is May 1 00:30 BKK (= April 30 17:30 UTC) -- counts as May.
+// If the query bucketed by UTC date, both would land in April and the test fails.
+func TestFeesUsesBangkokMonthBoundaries(t *testing.T) {
+	s := store.New()
+	bk := domain.BangkokTZ()
+
+	// Record A: April 30 23:30 Bangkok (the supplied UTC instant equals 16:30Z).
+	settleA := time.Date(2026, 4, 30, 23, 30, 0, 0, bk)
+	s.SaveSettlement(domain.SettlementRecord{
+		TransactionID:   "T_APR",
+		Acquirer:        domain.AcquirerThai,
+		GrossMinor:      100000,
+		FeeMinor:        1500,
+		NetMinor:        98500,
+		Currency:        "THB",
+		TransactionDate: settleA,
+		SettlementDate:  settleA,
+		PaymentMethod:   domain.MethodCreditCard,
+	})
+	// Record B: May 1 00:30 Bangkok (= April 30 17:30 UTC).
+	settleB := time.Date(2026, 5, 1, 0, 30, 0, 0, bk)
+	s.SaveSettlement(domain.SettlementRecord{
+		TransactionID:   "T_MAY",
+		Acquirer:        domain.AcquirerThai,
+		GrossMinor:      100000,
+		FeeMinor:        9999,
+		NetMinor:        90001,
+		Currency:        "THB",
+		TransactionDate: settleB,
+		SettlementDate:  settleB,
+		PaymentMethod:   domain.MethodCreditCard,
+	})
+
+	q := New(s)
+	res, err := q.FeesByAcquirer("2026-04")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Only Record A's fee (15.00) should be in April; Record B (99.99) is May.
+	if res.Total != "15.00" {
+		t.Errorf("April total: got %q, want 15.00 (only record A; record B is in May Bangkok)", res.Total)
+	}
+}
