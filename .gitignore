@@ -1,0 +1,5 @@
+/server
+/payout-engine
+*.log
+.demo/
+.env
