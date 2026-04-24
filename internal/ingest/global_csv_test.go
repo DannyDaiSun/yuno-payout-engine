@@ -115,3 +115,17 @@ func TestGlobalCSVRejectsMissingColumn(t *testing.T) {
 		t.Errorf("expected error to mention processing_fee, got: %v", err)
 	}
 }
+
+func TestGlobalCSVRejectsNetMismatch(t *testing.T) {
+	// gross=1000, fee=25, net=900; correct net would be 975.
+	input := "reference_number,processed_on,payout_date,original_amount,processing_fee,settled_amount,type\n" +
+		"REF01,20/04/2026,24/04/2026,1000.00,25.00,900.00,credit_card\n"
+
+	_, err := ParseGlobalCSV(strings.NewReader(input), "global.csv")
+	if err == nil {
+		t.Fatal("expected error for net mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "net") {
+		t.Errorf("expected error to mention net, got: %v", err)
+	}
+}

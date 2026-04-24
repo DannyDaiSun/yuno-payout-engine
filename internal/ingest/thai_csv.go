@@ -84,6 +84,10 @@ func ParseThaiCSV(r io.Reader, sourceFile string) ([]domain.SettlementRecord, er
 			return nil, fmt.Errorf("thai_csv: line %d: net_amt: %w", lineNum, err)
 		}
 
+		if gross-fee != net {
+			return nil, fmt.Errorf("thai_csv: line %d: gross - fee != net (got %d - %d != %d)", lineNum, gross, fee, net)
+		}
+
 		out = append(out, domain.SettlementRecord{
 			TransactionID:   row[idx["txn_ref"]],
 			Acquirer:        domain.AcquirerThai,

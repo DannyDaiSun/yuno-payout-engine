@@ -73,6 +73,10 @@ func ParsePromptJSON(r io.Reader, sourceFile string) ([]domain.SettlementRecord,
 			return nil, fmt.Errorf("prompt_json: record %d: %w", i, err)
 		}
 
+		if gross-fee != net {
+			return nil, fmt.Errorf("prompt_json: record %d: gross - fee != net (got %d - %d != %d)", i, gross, fee, net)
+		}
+
 		out = append(out, domain.SettlementRecord{
 			TransactionID:   raw.TransactionID,
 			Acquirer:        domain.AcquirerPrompt,

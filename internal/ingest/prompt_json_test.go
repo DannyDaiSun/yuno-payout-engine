@@ -157,3 +157,16 @@ func TestPromptJSONTieredFeeBoundary(t *testing.T) {
 		t.Errorf("record[1] GrossMinor: got %d, want %d", recs[1].GrossMinor, wantGross1)
 	}
 }
+
+func TestPromptJSONRejectsNetMismatch(t *testing.T) {
+	// gross=1000, fee=25, net=900; correct net would be 975.
+	input := `[{"transaction_id":"TXN001","txn_date":"2026-04-20T10:00:00Z","settle_date":"2026-04-23T10:00:00Z","amount":1000.00,"merchant_fee":25.00,"net_payout":900.00,"channel":"promptpay"}]`
+
+	_, err := ParsePromptJSON(strings.NewReader(input), "prompt.json")
+	if err == nil {
+		t.Fatal("expected error for net mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "record") {
+		t.Errorf("expected error to mention record, got: %v", err)
+	}
+}

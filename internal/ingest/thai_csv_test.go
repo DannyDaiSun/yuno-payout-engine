@@ -129,6 +129,20 @@ func TestThaiCSVAttachesAcquirerAndSource(t *testing.T) {
 	}
 }
 
+func TestThaiCSVRejectsNetMismatch(t *testing.T) {
+	// gross=1000, fee=25, net=900; correct net would be 975.
+	input := "txn_ref,transaction_date,settlement_date,gross_amt,fee_amt,net_amt,payment_method\n" +
+		"TXN001,2026-04-20,2026-04-21,1000.00,25.00,900.00,credit_card\n"
+
+	_, err := ParseThaiCSV(strings.NewReader(input), "thai.csv")
+	if err == nil {
+		t.Fatal("expected error for net mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "net") {
+		t.Errorf("expected error to mention net, got: %v", err)
+	}
+}
+
 func TestThaiCSVDatesAreBangkokTZ(t *testing.T) {
 	input := "txn_ref,transaction_date,settlement_date,gross_amt,fee_amt,net_amt,payment_method\n" +
 		"TXN001,2026-04-20,2026-04-21,1000.00,25.00,975.00,credit_card\n"

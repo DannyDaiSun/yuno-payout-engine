@@ -75,6 +75,10 @@ func ParseGlobalCSV(r io.Reader, sourceFile string) ([]domain.SettlementRecord, 
 			return nil, fmt.Errorf("global_csv: line %d: settled_amount: %w", lineNum, err)
 		}
 
+		if gross-fee != net {
+			return nil, fmt.Errorf("global_csv: line %d: gross - fee != net (got %d - %d != %d)", lineNum, gross, fee, net)
+		}
+
 		out = append(out, domain.SettlementRecord{
 			TransactionID:   row[idx["reference_number"]],
 			Acquirer:        domain.AcquirerGlobal,
