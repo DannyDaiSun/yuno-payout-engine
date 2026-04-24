@@ -8,8 +8,10 @@ import (
 
 	"github.com/dannydaisun/payout-engine/internal/anomaly"
 	"github.com/dannydaisun/payout-engine/internal/domain"
+	"github.com/dannydaisun/payout-engine/internal/forecast"
 	"github.com/dannydaisun/payout-engine/internal/ingest"
 	"github.com/dannydaisun/payout-engine/internal/query"
+	"github.com/dannydaisun/payout-engine/internal/reconcile"
 	"github.com/dannydaisun/payout-engine/internal/schedule"
 	"github.com/dannydaisun/payout-engine/internal/store"
 	"github.com/gin-gonic/gin"
@@ -34,6 +36,29 @@ func (srv *Server) Routes(r *gin.Engine) {
 	r.GET("/queries/overdue", srv.overdue)
 	r.GET("/queries/settled", srv.settled)
 	r.GET("/queries/anomalies", srv.anomalies)
+	r.GET("/queries/forecast", srv.forecast)
+}
+
+func (srv *Server) forecast(c *gin.Context) {
+	daysStr := c.DefaultQuery("days", "7")
+	var days int
+	if _, err := fmt.Sscanf(daysStr, "%d", &days); err != nil || days < 1 || days > 14 {
+		c.JSON(http.StatusBadRequest, errResp("invalid_days", fmt.Sprintf("days must be 1..14: %s", daysStr)))
+		return
+	}
+	asOfStr := c.Query("as_of")
+	asOf := bangkokToday()
+	if asOfStr != "" {
+		d, err := parseBangkokDate(asOfStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, errResp("invalid_date", fmt.Sprintf("as_of must be YYYY-MM-DD: %s", asOfStr)))
+			return
+		}
+		asOf = d
+	}
+	rec := reconcile.Reconcile(srv.store.ListTransactions(), srv.store.ListSettlements(), asOf)
+	res := forecast.Forecast(rec, asOf, days)
+	c.JSON(http.StatusOK, res)
 }
 
 type AnomaliesResult struct {
