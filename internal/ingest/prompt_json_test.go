@@ -36,3 +36,11 @@ func TestPromptJSONHandlesEmptyArray(t *testing.T) {
 		t.Errorf("expected 0 records, got %d", len(recs))
 	}
 }
+
+func TestPromptJSONRejectsStringAmount(t *testing.T) {
+	input := `[{"transaction_id":"T1","txn_date":"2026-04-20T10:00:00Z","settle_date":"2026-04-23T10:00:00Z","amount":"1000.00","merchant_fee":"15.00","net_payout":"985.00","channel":"promptpay"}]`
+	_, err := ParsePromptJSON(strings.NewReader(input), "test")
+	if err == nil {
+		t.Errorf("expected error for string amount in JSON")
+	}
+}

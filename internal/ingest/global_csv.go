@@ -49,11 +49,15 @@ func ParseGlobalCSV(r io.Reader, sourceFile string) ([]domain.SettlementRecord, 
 			return nil, fmt.Errorf("global_csv: line %d: %w", lineNum, err)
 		}
 
-		txnDate, err := time.Parse(dateLayout, row[idx["processed_on"]])
+		if len(row) < len(header) {
+			return nil, fmt.Errorf("global csv: row %d: short row (got %d fields, want %d)", lineNum, len(row), len(header))
+		}
+
+		txnDate, err := time.ParseInLocation(dateLayout, row[idx["processed_on"]], domain.BangkokTZ())
 		if err != nil {
 			return nil, fmt.Errorf("global_csv: line %d: processed_on: %w", lineNum, err)
 		}
-		setDate, err := time.Parse(dateLayout, row[idx["payout_date"]])
+		setDate, err := time.ParseInLocation(dateLayout, row[idx["payout_date"]], domain.BangkokTZ())
 		if err != nil {
 			return nil, fmt.Errorf("global_csv: line %d: payout_date: %w", lineNum, err)
 		}

@@ -49,11 +49,15 @@ func ParseThaiCSV(r io.Reader, sourceFile string) ([]domain.SettlementRecord, er
 			return nil, fmt.Errorf("thai_csv: line %d: %w", lineNum, err)
 		}
 
-		txnDate, err := time.Parse(dateLayout, row[idx["transaction_date"]])
+		if len(row) < len(header) {
+			return nil, fmt.Errorf("thai csv: row %d: short row (got %d fields, want %d)", lineNum, len(row), len(header))
+		}
+
+		txnDate, err := time.ParseInLocation(dateLayout, row[idx["transaction_date"]], domain.BangkokTZ())
 		if err != nil {
 			return nil, fmt.Errorf("thai_csv: line %d: transaction_date: %w", lineNum, err)
 		}
-		setDate, err := time.Parse(dateLayout, row[idx["settlement_date"]])
+		setDate, err := time.ParseInLocation(dateLayout, row[idx["settlement_date"]], domain.BangkokTZ())
 		if err != nil {
 			return nil, fmt.Errorf("thai_csv: line %d: settlement_date: %w", lineNum, err)
 		}
