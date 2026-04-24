@@ -97,8 +97,12 @@ func Reconcile(txns []domain.Transaction, settlements []domain.SettlementRecord,
 			}
 		}
 
+		// Compare Bangkok dates: same-day expected settlement remains pending
+		// (settlement may still arrive today). Only past Bangkok days are overdue.
+		expDay := domain.BangkokMidnight(t.ExpectedSettleDate)
+		asOfDay := domain.BangkokMidnight(asOf)
 		status := domain.StatusOverdue
-		if t.ExpectedSettleDate.After(asOf) {
+		if !expDay.Before(asOfDay) {
 			status = domain.StatusPending
 		}
 		reconciled = append(reconciled, domain.ReconciledTransaction{
