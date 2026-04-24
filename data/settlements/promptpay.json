@@ -1,0 +1,92 @@
+[
+  {
+    "transaction_id": "TXN003",
+    "txn_date": "2026-04-21T00:00:00+07:00",
+    "settle_date": "2026-04-24T00:00:00+07:00",
+    "amount": "5471.00",
+    "merchant_fee": "98.48",
+    "net_payout": "5372.52",
+    "channel": "truemoney_wallet"
+  },
+  {
+    "transaction_id": "TXN006",
+    "txn_date": "2026-04-18T00:00:00+07:00",
+    "settle_date": "2026-04-21T00:00:00+07:00",
+    "amount": "33955.00",
+    "merchant_fee": "747.01",
+    "net_payout": "33207.99",
+    "channel": "promptpay"
+  },
+  {
+    "transaction_id": "TXN009",
+    "txn_date": "2026-04-15T00:00:00+07:00",
+    "settle_date": "2026-04-18T00:00:00+07:00",
+    "amount": "14144.00",
+    "merchant_fee": "254.59",
+    "net_payout": "13889.41",
+    "channel": "credit_card"
+  },
+  {
+    "transaction_id": "TXN012",
+    "txn_date": "2026-04-12T00:00:00+07:00",
+    "settle_date": "2026-04-15T00:00:00+07:00",
+    "amount": "4588.00",
+    "merchant_fee": "68.82",
+    "net_payout": "4519.18",
+    "channel": "bank_transfer"
+  },
+  {
+    "transaction_id": "TXN015",
+    "txn_date": "2026-04-09T00:00:00+07:00",
+    "settle_date": "2026-04-12T00:00:00+07:00",
+    "amount": "31677.00",
+    "merchant_fee": "696.89",
+    "net_payout": "30980.11",
+    "channel": "truemoney_wallet"
+  },
+  {
+    "transaction_id": "TXN018",
+    "txn_date": "2026-04-06T00:00:00+07:00",
+    "settle_date": "2026-04-09T00:00:00+07:00",
+    "amount": "46693.00",
+    "merchant_fee": "1027.25",
+    "net_payout": "45665.75",
+    "channel": "promptpay"
+  },
+  {
+    "transaction_id": "TXN021",
+    "txn_date": "2026-04-03T00:00:00+07:00",
+    "settle_date": "2026-04-06T00:00:00+07:00",
+    "amount": "21547.00",
+    "merchant_fee": "474.03",
+    "net_payout": "21072.97",
+    "channel": "credit_card"
+  },
+  {
+    "transaction_id": "TXN024",
+    "txn_date": "2026-03-31T00:00:00+07:00",
+    "settle_date": "2026-04-03T00:00:00+07:00",
+    "amount": "9001.00",
+    "merchant_fee": "162.02",
+    "net_payout": "8838.98",
+    "channel": "bank_transfer"
+  },
+  {
+    "transaction_id": "TXN027",
+    "txn_date": "2026-03-28T00:00:00+07:00",
+    "settle_date": "2026-03-31T00:00:00+07:00",
+    "amount": "11618.00",
+    "merchant_fee": "209.12",
+    "net_payout": "11408.88",
+    "channel": "truemoney_wallet"
+  },
+  {
+    "transaction_id": "TXN030",
+    "txn_date": "2026-03-25T00:00:00+07:00",
+    "settle_date": "2026-03-28T00:00:00+07:00",
+    "amount": "28095.00",
+    "merchant_fee": "618.09",
+    "net_payout": "27476.91",
+    "channel": "promptpay"
+  }
+]
