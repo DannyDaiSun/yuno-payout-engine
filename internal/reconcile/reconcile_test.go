@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -178,6 +179,112 @@ func TestReconcileFlagsAcquirerMismatch(t *testing.T) {
 	}
 	if r.Settlement != nil {
 		t.Fatalf("expected nil settlement on acquirer-mismatch txn, got %+v", r.Settlement)
+	}
+}
+
+func TestReconcileFlagsDuplicateSettlement(t *testing.T) {
+	asOf := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	txn := domain.Transaction{
+		ID:                 "T1",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        10000,
+		Currency:           "THB",
+		TransactionDate:    asOf.Add(-24 * time.Hour),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: asOf.Add(-1 * time.Hour),
+	}
+	first := domain.SettlementRecord{
+		TransactionID:  "T1",
+		Acquirer:       domain.AcquirerThai,
+		GrossMinor:     10000,
+		FeeMinor:       100,
+		NetMinor:       9900,
+		Currency:       "THB",
+		SettlementDate: asOf,
+		PaymentMethod:  domain.MethodCreditCard,
+	}
+	second := first // same key (T1, AcquirerThai)
+
+	res := Reconcile([]domain.Transaction{txn}, []domain.SettlementRecord{first, second}, asOf)
+
+	// T1 must be settled using the first occurrence.
+	if len(res.Reconciled) != 1 {
+		t.Fatalf("expected 1 reconciled txn, got %d", len(res.Reconciled))
+	}
+	r := res.Reconciled[0]
+	if r.Status != domain.StatusSettled {
+		t.Fatalf("expected status settled, got %s", r.Status)
+	}
+	if r.Settlement == nil {
+		t.Fatalf("expected settlement attached for T1, got nil")
+	}
+
+	// Exactly one duplicate-settlement discrepancy must be emitted.
+	var dupCount int
+	for _, d := range res.Discrepancies {
+		if d.Reason == domain.DiscrepancyDuplicateSettlement {
+			dupCount++
+			if d.TransactionID != "T1" {
+				t.Fatalf("expected duplicate discrepancy TransactionID=T1, got %s", d.TransactionID)
+			}
+			if d.Acquirer != domain.AcquirerThai {
+				t.Fatalf("expected duplicate discrepancy Acquirer=Thai, got %s", d.Acquirer)
+			}
+		}
+	}
+	if dupCount != 1 {
+		t.Fatalf("expected exactly 1 DiscrepancyDuplicateSettlement, got %d (all=%+v)", dupCount, res.Discrepancies)
+	}
+}
+
+func TestReconcileFlagsTripleDuplicateOnce(t *testing.T) {
+	asOf := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	txn := domain.Transaction{
+		ID:                 "T1",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        10000,
+		Currency:           "THB",
+		TransactionDate:    asOf.Add(-24 * time.Hour),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: asOf.Add(-1 * time.Hour),
+	}
+	s := domain.SettlementRecord{
+		TransactionID:  "T1",
+		Acquirer:       domain.AcquirerThai,
+		GrossMinor:     10000,
+		FeeMinor:       100,
+		NetMinor:       9900,
+		Currency:       "THB",
+		SettlementDate: asOf,
+		PaymentMethod:  domain.MethodCreditCard,
+	}
+
+	// Three settlements all sharing the same (TxnID, Acquirer).
+	res := Reconcile([]domain.Transaction{txn}, []domain.SettlementRecord{s, s, s}, asOf)
+
+	// Single-with-count approach: exactly one DiscrepancyDuplicateSettlement,
+	// with the count "3" in its detail.
+	var found *domain.Discrepancy
+	count := 0
+	for i := range res.Discrepancies {
+		if res.Discrepancies[i].Reason == domain.DiscrepancyDuplicateSettlement {
+			count++
+			found = &res.Discrepancies[i]
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 DiscrepancyDuplicateSettlement (single-with-count), got %d (all=%+v)", count, res.Discrepancies)
+	}
+	if found == nil {
+		t.Fatalf("expected a duplicate discrepancy, got none")
+	}
+	if !strings.Contains(found.Detail, "3 times") {
+		t.Fatalf("expected detail to mention '3 times', got %q", found.Detail)
+	}
+
+	// Transaction is still settled.
+	if len(res.Reconciled) != 1 || res.Reconciled[0].Status != domain.StatusSettled {
+		t.Fatalf("expected T1 settled, got %+v", res.Reconciled)
 	}
 }
 

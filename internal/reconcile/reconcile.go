@@ -31,16 +31,50 @@ type settlementKey struct {
 //   - DiscrepancyAmountMismatch: a settlement matches (TxnID, Acquirer) but the
 //     GrossMinor does not equal the transaction's AmountMinor. The transaction
 //     is still marked settled (matching by ID is authoritative for status).
+//   - DiscrepancyDuplicateSettlement: two or more settlement rows share the
+//     same (TxnID, Acquirer) within the input batch. Decision policy is
+//     "first row wins": the first occurrence is stored in the index and used
+//     for matching; later duplicates are ignored for matching purposes but
+//     surfaced as a single discrepancy per duplicated key, with the total
+//     occurrence count included in the detail.
 func Reconcile(txns []domain.Transaction, settlements []domain.SettlementRecord, asOf time.Time) Result {
 	// Index settlements by (txnID, acquirer) for O(1) exact match lookup.
 	settlementIdx := make(map[settlementKey]*domain.SettlementRecord, len(settlements))
 	// Secondary index: settlements grouped by TxnID alone, used to detect
 	// acquirer mismatches (settlement exists for the ID but with a different acquirer).
 	settlementsByTxn := make(map[string][]*domain.SettlementRecord, len(settlements))
+	// Count occurrences of each (txnID, acquirer) so we can flag duplicates.
+	// Decision policy: first-row-wins. The first settlement is stored in
+	// settlementIdx; subsequent rows with the same key only bump the counter.
+	dupCount := make(map[settlementKey]int, len(settlements))
+	reconciled := make([]domain.ReconciledTransaction, 0, len(txns))
+	discrepancies := make([]domain.Discrepancy, 0)
 	for i := range settlements {
 		s := &settlements[i]
-		settlementIdx[settlementKey{TxnID: s.TransactionID, Acquirer: s.Acquirer}] = s
+		k := settlementKey{TxnID: s.TransactionID, Acquirer: s.Acquirer}
+		dupCount[k]++
+		if _, exists := settlementIdx[k]; !exists {
+			// First occurrence wins for matching.
+			settlementIdx[k] = s
+		}
+		// Always add to settlementsByTxn so acquirer-mismatch detection still
+		// works even if duplicates are interleaved (rare but defensive).
 		settlementsByTxn[s.TransactionID] = append(settlementsByTxn[s.TransactionID], s)
+	}
+	// Emit one DiscrepancyDuplicateSettlement per duplicated key, including the
+	// total occurrence count in the detail string.
+	for k, count := range dupCount {
+		if count > 1 {
+			discrepancies = append(discrepancies, domain.Discrepancy{
+				TransactionID: k.TxnID,
+				Acquirer:      k.Acquirer,
+				Reason:        domain.DiscrepancyDuplicateSettlement,
+				Detail: fmt.Sprintf(
+					"settlement %s for acquirer %s appears %d times in the input batch",
+					k.TxnID, k.Acquirer, count,
+				),
+			})
+		}
 	}
 
 	// Build a set of known transaction IDs to detect "unknown transaction" settlements.
@@ -52,9 +86,6 @@ func Reconcile(txns []domain.Transaction, settlements []domain.SettlementRecord,
 	// Track which settlements were matched (exact match or via acquirer mismatch
 	// against a known txn) so we can flag truly unknown ones afterwards.
 	consumed := make(map[settlementKey]bool, len(settlements))
-
-	reconciled := make([]domain.ReconciledTransaction, 0, len(txns))
-	discrepancies := make([]domain.Discrepancy, 0)
 
 	for _, t := range txns {
 		exactKey := settlementKey{TxnID: t.ID, Acquirer: t.Acquirer}
