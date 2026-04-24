@@ -4,10 +4,16 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/dannydaisun/payout-engine/internal/domain"
 )
+
+// utf8BOM is the byte sequence some producers prepend to UTF-8
+// CSV files. It must be stripped from the first header cell so that
+// header-name lookups continue to work.
+const utf8BOM = "\uFEFF"
 
 // ParseThaiCSV parses a CSV stream from the Thai acquirer.
 // CSV columns: txn_ref, transaction_date, settlement_date, gross_amt, fee_amt, net_amt, payment_method
@@ -19,6 +25,9 @@ func ParseThaiCSV(r io.Reader, sourceFile string) ([]domain.SettlementRecord, er
 	header, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("thai_csv: read header: %w", err)
+	}
+	if len(header) > 0 {
+		header[0] = strings.TrimPrefix(header[0], utf8BOM)
 	}
 
 	idx := make(map[string]int, len(header))

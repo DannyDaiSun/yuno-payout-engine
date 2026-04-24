@@ -3,6 +3,7 @@ package ingest
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dannydaisun/payout-engine/internal/domain"
 )
@@ -44,6 +45,70 @@ func TestPromptJSONRejectsStringAmount(t *testing.T) {
 	_, err := ParsePromptJSON(strings.NewReader(input), "test")
 	if err == nil {
 		t.Errorf("expected error for string amount in JSON")
+	}
+}
+
+func TestPromptJSONParsesArray(t *testing.T) {
+	input := `[
+		{"transaction_id":"T1","txn_date":"2026-04-20T10:00:00Z","settle_date":"2026-04-23T10:00:00Z","amount":1000.00,"merchant_fee":15.00,"net_payout":985.00,"channel":"promptpay"},
+		{"transaction_id":"T2","txn_date":"2026-04-20T10:00:00Z","settle_date":"2026-04-23T10:00:00Z","amount":2000.00,"merchant_fee":30.00,"net_payout":1970.00,"channel":"promptpay"},
+		{"transaction_id":"T3","txn_date":"2026-04-20T10:00:00Z","settle_date":"2026-04-23T10:00:00Z","amount":3000.00,"merchant_fee":45.00,"net_payout":2955.00,"channel":"promptpay"}
+	]`
+
+	recs, err := ParsePromptJSON(strings.NewReader(input), "prompt.json")
+	if err != nil {
+		t.Fatalf("ParsePromptJSON returned error: %v", err)
+	}
+	if len(recs) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(recs))
+	}
+	wantIDs := []string{"T1", "T2", "T3"}
+	for i, want := range wantIDs {
+		if recs[i].TransactionID != want {
+			t.Errorf("record[%d] TransactionID: got %q, want %q", i, recs[i].TransactionID, want)
+		}
+	}
+}
+
+func TestPromptJSONParsesRFC3339WithBangkokOffset(t *testing.T) {
+	input := `[{"transaction_id":"T1","txn_date":"2026-04-24T10:00:00+07:00","settle_date":"2026-04-27T10:00:00+07:00","amount":1000.00,"merchant_fee":15.00,"net_payout":985.00,"channel":"promptpay"}]`
+
+	recs, err := ParsePromptJSON(strings.NewReader(input), "prompt.json")
+	if err != nil {
+		t.Fatalf("ParsePromptJSON returned error: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	// 10:00 +07:00 must map to the same instant as 03:00 UTC.
+	wantInstant := time.Date(2026, 4, 24, 3, 0, 0, 0, time.UTC)
+	if !recs[0].TransactionDate.Equal(wantInstant) {
+		t.Errorf("TransactionDate: got %v, want instant equal to %v", recs[0].TransactionDate, wantInstant)
+	}
+}
+
+func TestPromptJSONParsesRFC3339UTC(t *testing.T) {
+	input := `[{"transaction_id":"T1","txn_date":"2026-04-24T03:00:00Z","settle_date":"2026-04-27T03:00:00Z","amount":1000.00,"merchant_fee":15.00,"net_payout":985.00,"channel":"promptpay"}]`
+
+	recs, err := ParsePromptJSON(strings.NewReader(input), "prompt.json")
+	if err != nil {
+		t.Fatalf("ParsePromptJSON returned error: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	// 03:00 UTC == 10:00 Asia/Bangkok same calendar day.
+	gotInBangkok := recs[0].TransactionDate.In(domain.BangkokTZ())
+	wantBangkok := time.Date(2026, 4, 24, 10, 0, 0, 0, domain.BangkokTZ())
+	if !gotInBangkok.Equal(wantBangkok) {
+		t.Errorf("TransactionDate (in Bangkok): got %v, want %v", gotInBangkok, wantBangkok)
+	}
+}
+
+func TestPromptJSONRejectsEmptyObjectInArray(t *testing.T) {
+	_, err := ParsePromptJSON(strings.NewReader(`[{}]`), "prompt.json")
+	if err == nil {
+		t.Fatal("expected error for empty object (missing required fields), got nil")
 	}
 }
 

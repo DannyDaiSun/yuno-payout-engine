@@ -64,6 +64,44 @@ func TestGlobalCSVDoesNotPanicOnShortRow(t *testing.T) {
 	}
 }
 
+func TestGlobalCSVRejectsInvalidDate(t *testing.T) {
+	// processed_on uses YYYY-MM-DD instead of the required DD/MM/YYYY.
+	input := "reference_number,processed_on,payout_date,original_amount,processing_fee,settled_amount,type\n" +
+		"REF003,2026-04-24,24/04/2026,1000.00,30.00,970.00,credit_card\n"
+
+	_, err := ParseGlobalCSV(strings.NewReader(input), "global.csv")
+	if err == nil {
+		t.Fatal("expected error for invalid processed_on date format, got nil")
+	}
+	if !strings.Contains(err.Error(), "processed_on") {
+		t.Errorf("expected error to mention processed_on, got: %v", err)
+	}
+}
+
+func TestGlobalCSVFeeIsFixedPlusPercentage(t *testing.T) {
+	// Per the GlobalPay spec the merchant fee is 10 THB fixed + 2% of the
+	// gross amount. For a 1000.00 gross that yields 10 + 20 = 30.00.
+	// The parser does NOT compute the fee; this test verifies it captures
+	// the supplied processing_fee value of 30.00 as 3000 minor units,
+	// matching the spec rule.
+	input := "reference_number,processed_on,payout_date,original_amount,processing_fee,settled_amount,type\n" +
+		"REF777,20/04/2026,24/04/2026,1000.00,30.00,970.00,credit_card\n"
+
+	recs, err := ParseGlobalCSV(strings.NewReader(input), "global.csv")
+	if err != nil {
+		t.Fatalf("ParseGlobalCSV returned error: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	if recs[0].FeeMinor != 3000 {
+		t.Errorf("FeeMinor: got %d, want 3000 (10 fixed + 2%% of 1000 = 30.00)", recs[0].FeeMinor)
+	}
+	if recs[0].GrossMinor != 100000 {
+		t.Errorf("GrossMinor: got %d, want 100000", recs[0].GrossMinor)
+	}
+}
+
 func TestGlobalCSVRejectsMissingColumn(t *testing.T) {
 	// Header is missing the processing_fee column.
 	input := "reference_number,processed_on,payout_date,original_amount,settled_amount,type\n" +
