@@ -1,7 +1,10 @@
 // Command gen-testdata generates deterministic fixture files for the
 // Bangkok Settlement Maze challenge. Run as: `go run ./cmd/gen-testdata`.
 //
-// SMOKE PHASE: minimal generator, deterministic with fixed seed.
+// Spec-scale generator: 300 transactions (100 per acquirer) and 70
+// settlement records per acquirer file. The remaining 30 unsettled
+// transactions per acquirer are split: 20 "recent" (will appear as
+// PENDING at reconcile-time) and 10 "old" (will appear as OVERDUE).
 package main
 
 import (
@@ -22,6 +25,15 @@ const (
 	acqPromptPay = "PromptPayProcessor"
 )
 
+// Volume constants (spec).
+const (
+	txnsPerAcquirer    = 100
+	settledPerAcquirer = 70
+	pendingPerAcquirer = 20 // unsettled, recent date  -> PENDING
+	overduePerAcquirer = 10 // unsettled, old date     -> OVERDUE
+	totalTxns          = txnsPerAcquirer * 3           // 300
+)
+
 // "Today" is fixed for determinism. The challenge sets 2026-04-23 as the
 // reference date; we anchor at midnight Bangkok time.
 var bangkok = time.FixedZone("ICT", 7*3600)
@@ -38,6 +50,8 @@ type txn struct {
 	Currency      string
 	TxnDate       time.Time
 	PaymentMethod string
+	// Settled is true if a settlement record will be emitted for this txn.
+	Settled bool
 }
 
 // round2 rounds to 2 decimals — money math.
@@ -46,38 +60,69 @@ func round2(v float64) float64 {
 }
 
 // generateTxns builds the deterministic transaction list.
-// Distribution: 30 txns total, 10 per acquirer, round-robin.
+//
+// Distribution per acquirer (100 txns):
+//   - first 20 positions  -> unsettled, recent (daysAgo in [0,4])  -> pending
+//   - next  10 positions  -> unsettled, old    (daysAgo in [11,29]) -> overdue
+//   - last  70 positions  -> settled, spread evenly across [0,29]
+//
+// Acquirers are assigned round-robin by global index so that each acquirer
+// receives exactly 100 transactions and the total is 300.
 func generateTxns(r *rand.Rand) []txn {
-	const total = 30
 	acquirers := []string{acqThai, acqGlobalPay, acqPromptPay}
-	out := make([]txn, 0, total)
-	for i := 0; i < total; i++ {
-		amt := float64(r.Intn(49901) + 100) // 100..50000 inclusive
-		// Spread dates evenly over past 30 days.
-		daysAgo := i % 30
+	out := make([]txn, 0, totalTxns)
+
+	// Per-acquirer position counter so we can decide settled/date bucket.
+	perAcqPos := map[string]int{
+		acqThai:      0,
+		acqGlobalPay: 0,
+		acqPromptPay: 0,
+	}
+
+	for i := 0; i < totalTxns; i++ {
+		acq := acquirers[i%3]
+		pos := perAcqPos[acq]
+		perAcqPos[acq] = pos + 1
+
+		var daysAgo int
+		var settled bool
+		switch {
+		case pos < pendingPerAcquirer:
+			// recent unsettled -> PENDING at reconcile time
+			daysAgo = pos % 5 // 0..4
+			settled = false
+		case pos < pendingPerAcquirer+overduePerAcquirer:
+			// old unsettled -> OVERDUE at reconcile time
+			daysAgo = 11 + ((pos - pendingPerAcquirer) % 19) // 11..29
+			settled = false
+		default:
+			// settled: spread across past 30 days
+			daysAgo = (pos - pendingPerAcquirer - overduePerAcquirer) % 30
+			settled = true
+		}
 		date := today.AddDate(0, 0, -daysAgo)
+
+		amt := float64(r.Intn(49901) + 100) // 100..50000 inclusive
 		out = append(out, txn{
-			ID:            fmt.Sprintf("TXN%03d", i+1),
-			Acquirer:      acquirers[i%3],
+			ID:            fmt.Sprintf("TXN%04d", i+1),
+			Acquirer:      acq,
 			Amount:        round2(amt),
 			Currency:      "THB",
 			TxnDate:       date,
 			PaymentMethod: paymentMethods[i%len(paymentMethods)],
+			Settled:       settled,
 		})
 	}
 	return out
 }
 
-// filterByAcquirer returns up to n transactions for the given acquirer,
+// settledByAcquirer returns the settled transactions for a given acquirer,
 // preserving original order so output is deterministic.
-func filterByAcquirer(all []txn, acq string, n int) []txn {
-	out := make([]txn, 0, n)
+func settledByAcquirer(all []txn, acq string) []txn {
+	out := make([]txn, 0, settledPerAcquirer)
 	for _, t := range all {
-		if t.Acquirer == acq {
+		if t.Acquirer == acq && t.Settled {
 			out = append(out, t)
-			if len(out) == n {
-				break
-			}
 		}
 	}
 	return out
@@ -145,7 +190,7 @@ func writeThaiCSV(path string, txns []txn) error {
 }
 
 // writeGlobalPayCSV writes data/settlements/global_pay.csv.
-// SMOKE: payout = processed + 3 days; fee = 10 + 2% gross. Date format DD/MM/YYYY.
+// payout = processed + 3 days; fee = 10 + 2% gross. Date format DD/MM/YYYY.
 func writeGlobalPayCSV(path string, txns []txn) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -234,13 +279,13 @@ func Generate(seed int64, outDir string) error {
 	if err := writeTransactionsCSV(filepath.Join(outDir, "transactions.csv"), all); err != nil {
 		return err
 	}
-	if err := writeThaiCSV(filepath.Join(outDir, "settlements", "thai_acquirer.csv"), filterByAcquirer(all, acqThai, 10)); err != nil {
+	if err := writeThaiCSV(filepath.Join(outDir, "settlements", "thai_acquirer.csv"), settledByAcquirer(all, acqThai)); err != nil {
 		return err
 	}
-	if err := writeGlobalPayCSV(filepath.Join(outDir, "settlements", "global_pay.csv"), filterByAcquirer(all, acqGlobalPay, 10)); err != nil {
+	if err := writeGlobalPayCSV(filepath.Join(outDir, "settlements", "global_pay.csv"), settledByAcquirer(all, acqGlobalPay)); err != nil {
 		return err
 	}
-	if err := writePromptPayJSON(filepath.Join(outDir, "settlements", "promptpay.json"), filterByAcquirer(all, acqPromptPay, 10)); err != nil {
+	if err := writePromptPayJSON(filepath.Join(outDir, "settlements", "promptpay.json"), settledByAcquirer(all, acqPromptPay)); err != nil {
 		return err
 	}
 	return nil
