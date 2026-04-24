@@ -1,375 +1,227 @@
-# Behaviors — Bangkok Settlement Maze (Refined)
+# Behaviors — Bangkok Settlement Maze
 
 Spec → test names. In-memory store. Money = `int64` minor units (satang). All times in **Bangkok timezone (UTC+7)**.
+
+Every behavior below is backed by a passing Go unit test (`go test -race -count=1 ./...`).
 
 ---
 
 ## Disambiguation (resolved before parallel work)
 
 1. **3 acquirers:** ThaiAcquirer (daily CSV), GlobalPay (Tue+Fri CSV), PromptPayProcessor (T+3 JSON)
-2. **GlobalPay same-day policy:** transaction on Tue 23:59 → settles **next Friday** (not same Tue — same-day ineligible). Rationale: settlement batches close at midnight. Document in README.
+2. **GlobalPay same-day policy:** transaction on Tue 23:59 → settles **next Friday** (not same Tue — same-day ineligible). Rationale: settlement batches close at midnight.
 3. **Dates in spec (YYYY-MM-DD etc) are Bangkok-local dates.** Normalize to Bangkok midnight internally.
 4. **Public holidays:** ignored (future work). Only Sat+Sun treated as non-business days.
 5. **Refunds / negative amounts:** out of scope. Parser rejects negatives.
-6. **Partial settlements (>1 settlement per txn):** out of scope. Parser rejects duplicate settlements; reconcile flags as discrepancy.
+6. **Duplicate `(txn_id, acquirer)` settlements:** first-row-wins at store layer; reconcile flags as `DiscrepancyDuplicateSettlement`.
 7. **Currency:** always THB. Parser rejects non-THB.
+8. **Same-day expected settlement:** stays `pending` (settlement may still arrive today). Only past Bangkok days are `overdue`.
 
 ---
 
-## TDD Approach (COMPRESSED — 2hr scope)
+## Module 0: Domain (`internal/domain/`)
 
-**Not per-cycle RED→GREEN→REFACTOR.** Instead **test-list per module**:
+Types: `Acquirer`, `PaymentMethod`, `SettlementStatus`, `Transaction`, `SettlementRecord`, `ReconciledTransaction`, `Discrepancy`, `DiscrepancyReason`.
+Helpers: `ParseMinorUnits`, `FormatMinorUnits`, `BangkokTZ`, `BangkokMidnight`, `IsWeekend`, `NextBusinessDay`, `AddBusinessDays`.
 
-1. Write ALL unit tests for a module (5 min) — tests fail compilation because impl doesn't exist
-2. Implement module to pass ALL tests (10-15 min)
-3. Commit when module green
-4. Refactor ONCE at module-end if obvious smell — otherwise defer to post-challenge
-
-Module-level RED → module-level GREEN. Skip the micro-loop. Still test-first discipline; just batched.
-
-**Verification gate before claiming module done:**
-```
-go test -race -count=1 ./internal/{module}/...
-```
-Must be green and all tests pass. No "should work" claims.
+- [x] `TestParseAmountToMinorUnits` — `"1000.25"` → `100025`
+- [x] `TestParseAmountRejectsNegative` — `"-5.00"` → error
+- [x] `TestParseAmountRejectsMoreThanTwoDecimals` — `"100.001"` → error
+- [x] `TestFormatMinorUnits` — `100025` → `"1000.25"`
+- [x] `TestBangkokMidnightNormalizes` — UTC instant → same Bangkok day at 00:00 +07:00
 
 ---
 
-## Codex Review Checkpoints (inlined into workflow)
-
-| When | Codex Task |
-|------|-----------|
-| Pre-Sprint 1 (now) | ✅ Edge case audit — done |
-| End of Sprint 1 | Review Ingest module correctness across all 3 parsers |
-| End of Sprint 2 | Review Store thread-safety + Reconcile discrepancy logic |
-| End of Sprint 3 | Review Query layer + HTTP API contract |
-| End of Sprint 4 | Adversarial review of full pipeline |
-| Sprint 5 (integration test) | Codex generates the integration test scenario |
-
----
-
-## Module 0: Domain (FROZEN — main agent, first 5 min)
-
-Path: `internal/domain/`
-
-**Types:** `Acquirer`, `PaymentMethod`, `SettlementStatus`, `Transaction`, `SettlementRecord`, `ReconciledTransaction`, `Discrepancy`, `DiscrepancyReason`.
-
-**Helpers:** `ParseMinorUnits(s string) (int64, error)`, `FormatMinorUnits(int64) string`, `BangkokTZ()` (returns `*time.Location`), `BangkokMidnight(t time.Time) time.Time`.
-
-### Tests (5)
-
-- [ ] `TestParseAmountToMinorUnits` — `"1000.25"` → `100025`
-- [ ] `TestParseAmountRejectsNegative` — `"-5.00"` → error (P0)
-- [ ] `TestParseAmountRejectsMoreThanTwoDecimals` — `"100.001"` → error (P0)
-- [ ] `TestFormatMinorUnits` — `100025` → `"1000.25"`
-- [ ] `TestBangkokMidnightNormalizes` — any `time.Time` → same day at 00:00 in UTC+7 (P0)
-
-**Constants:** 3 acquirer IDs, 4 payment methods, 3 status values, discrepancy reasons.
-
----
-
-## Module A: Schedule Calculator (subagent-A, independent)
-
-Path: `internal/schedule/`
+## Module A: Schedule Calculator (`internal/schedule/`)
 
 Signature: `func ExpectedSettlementDate(acquirer Acquirer, txnDate time.Time) (time.Time, error)`
 
-### Tests (10 — 8 happy + 2 edge)
-
-Happy paths:
-- [ ] `TestThaiAcquirerNextBusinessDay` — Mon txn → Tue
-- [ ] `TestThaiAcquirerFridaySkipsToMonday` — Fri → Mon
-- [ ] `TestGlobalPayMondayGoesToTuesday` — Mon txn → Tue
-- [ ] `TestGlobalPayWednesdayGoesToFriday` — Wed → Fri
-- [ ] `TestGlobalPayTuesdaySkipsToFriday` — Tue txn (same-day ineligible) → Fri
-- [ ] `TestGlobalPayFridaySkipsToNextTuesday` — Fri txn → next Tue
-- [ ] `TestPromptPayT3Weekday` — Mon → Thu
-- [ ] `TestPromptPayT3AcrossWeekend` — Wed → next Mon (skip Sat/Sun)
-
-Edge cases (P0):
-- [ ] `TestPromptPayFridayTxnSettlesWednesday` — Fri txn, +3 business days → next Wed
-- [ ] `TestUnknownAcquirerReturnsError` — unknown acquirer → error
-
-Deferred (P1, add if time):
-- `TestPromptPayT3AcrossMonthBoundary`, `TestGlobalPayAcrossYearBoundary` — calendar math already tested implicitly via weekend skips; explicit boundaries only if time permits.
+- [x] `TestThaiAcquirerNextBusinessDay` — Mon → Tue
+- [x] `TestThaiAcquirerFridaySkipsToMonday` — Fri → Mon
+- [x] `TestGlobalPayMondayGoesToTuesday` — Mon → Tue
+- [x] `TestGlobalPayWednesdayGoesToFriday` — Wed → Fri
+- [x] `TestGlobalPayTuesdaySkipsToFriday` — Tue (same-day ineligible) → Fri
+- [x] `TestGlobalPayFridaySkipsToNextTuesday` — Fri → next Tue
+- [x] `TestPromptPayT3Weekday` — Mon → Thu
+- [x] `TestPromptPayT3AcrossWeekend` — Wed → next Mon
+- [x] `TestPromptPayFridayTxnSettlesWednesday` — Fri +3 business → next Wed
+- [x] `TestUnknownAcquirerReturnsError` — unknown → error
 
 ---
 
-## Module B: Ingest — 3 Parsers (subagent-B, independent)
+## Module B: Ingest — 3 Parsers (`internal/ingest/`)
 
-Path: `internal/ingest/`
+Each parser: `func Parse{Acquirer}(r io.Reader, sourceFile string) ([]SettlementRecord, error)`.
 
-Each parser: `func Parse{AcquirerName}(r io.Reader, sourceFile string) ([]SettlementRecord, error)`
+Common guarantees: header-name mapping, Bangkok TZ, satang amounts, row-length safety.
 
-Common requirements (checked once per parser):
-- Column mapping by **header name** not position (P0 — codex flagged)
-- UTF-8 BOM tolerated
-- Empty required field → row-level error with row number
-- Unknown columns ignored
-- `gross - fee != net` in source → flag as discrepancy in record (don't reject)
-- Amounts → `int64` satang
+### B.1 Thai Acquirer CSV (`thai_csv.go`)
 
-### B.1 — Thai Acquirer CSV (8 tests)
+- [x] `TestThaiCSVParsesValidRow`
+- [x] `TestThaiCSVParsesMultipleRows`
+- [x] `TestThaiCSVRejectsMissingColumn`
+- [x] `TestThaiCSVRejectsEmptyFile`
+- [x] `TestThaiCSVHeaderOnlyReturnsZeroRecords`
+- [x] `TestThaiCSVColumnsParsedByHeader` — different column order still parses
+- [x] `TestThaiCSVTolerateUTF8BOM`
+- [x] `TestThaiCSVAttachesAcquirerAndSource`
+- [x] `TestThaiCSVDatesAreBangkokTZ`
+- [x] `TestGlobalCSVDoesNotPanicOnShortRow` — short row → error, not panic (lives in global file but covers both)
 
-- [ ] `TestThaiCSVParsesValidRow` — full row → 1 record
-- [ ] `TestThaiCSVParsesMultipleRows` — 5 rows → 5 records
-- [ ] `TestThaiCSVRejectsMissingColumn` — missing `fee_amt` → error names missing column
-- [ ] `TestThaiCSVRejectsEmptyFile` — 0 bytes → error (P0)
-- [ ] `TestThaiCSVHeaderOnlyReturnsZeroRecords` — header only → `[]`, no error
-- [ ] `TestThaiCSVColumnsParsedByHeader` — columns in different order still parse (P0)
-- [ ] `TestThaiCSVTolerateUTF8BOM` — file starts with `﻿` → still parses (P1)
-- [ ] `TestThaiCSVAttachesAcquirerAndSource` — record has `Acquirer=ThaiAcquirer`, `SourceFile=...`
+### B.2 GlobalPay CSV (`global_csv.go`)
 
-### B.2 — GlobalPay CSV (6 tests)
+- [x] `TestGlobalCSVParsesValidRow`
+- [x] `TestGlobalCSVMapsReferenceNumberToTransactionID`
+- [x] `TestGlobalCSVParsesDDMMYYYY`
+- [x] `TestGlobalCSVRejectsInvalidDate`
+- [x] `TestGlobalCSVFeeIsFixedPlusPercentage` — `10 + 2%` of 1000 = 30 captured
+- [x] `TestGlobalCSVRejectsMissingColumn`
 
-- [ ] `TestGlobalCSVParsesValidRow` — valid row → 1 record
-- [ ] `TestGlobalCSVMapsReferenceNumberToTransactionID` — `reference_number` → `TransactionID`
-- [ ] `TestGlobalCSVParsesDDMMYYYY` — `"24/04/2026"` parses
-- [ ] `TestGlobalCSVRejectsInvalidDate` — `"2026-04-24"` in DD/MM field → error
-- [ ] `TestGlobalCSVFeeIsFixedPlusPercentage` — `10 THB + 2%` of 1000 = 30 → verify parsed net
-- [ ] `TestGlobalCSVRejectsMissingColumn` — missing column → error
+### B.3 PromptPay JSON (`prompt_json.go`)
 
-### B.3 — PromptPay JSON (7 tests)
-
-- [ ] `TestPromptJSONParsesArray` — 3 objects → 3 records
-- [ ] `TestPromptJSONParsesRFC3339WithBangkokOffset` — `"2026-04-24T10:00:00+07:00"` (P0)
-- [ ] `TestPromptJSONParsesRFC3339UTC` — `"2026-04-24T03:00:00Z"` → same Bangkok date
-- [ ] `TestPromptJSONRejectsMalformedJSON` — `"{"` → error with acquirer + file context
-- [ ] `TestPromptJSONRejectsNullRequiredField` — `transaction_id: null` → error (P0)
-- [ ] `TestPromptJSONRejectsEmptyObjectInArray` — `[{}]` → error (P0)
-- [ ] `TestPromptJSONTieredFeeBoundary` — 4999.99 THB at 1.5%, 5000 THB at 1.8% (P0 — tier boundary)
-
-### B.4 — Parser Dispatcher (1 test — INLINE in HTTP later)
-
-- [ ] `TestParserDispatchByAcquirer` — maps acquirer name → parser function
-
-**B total: 22 tests**
+- [x] `TestPromptJSONParsesValidRecord`
+- [x] `TestPromptJSONParsesArray` — multi-element array
+- [x] `TestPromptJSONParsesRFC3339WithBangkokOffset` — `+07:00`
+- [x] `TestPromptJSONParsesRFC3339UTC` — `Z` → equivalent Bangkok day
+- [x] `TestPromptJSONRejectsMalformedJSON`
+- [x] `TestPromptJSONRejectsNullRequiredField`
+- [x] `TestPromptJSONRejectsEmptyObjectInArray` — `[{}]` → error
+- [x] `TestPromptJSONHandlesEmptyArray` — `[]` → 0 records, no error
+- [x] `TestPromptJSONRejectsStringAmount` — strict-numeric (no quoted amounts)
+- [x] `TestPromptJSONTieredFeeBoundary` — fee values at 4999.99 vs 5000.00 captured
 
 ---
 
-## Module C: Store + Reconcile (subagent-C, depends on Domain)
+## Module C: Store + Reconcile
 
-Path: `internal/store/` + `internal/reconcile/`
+### C.1 In-Memory Store (`internal/store/memory.go`)
 
-### C.1 — In-Memory Store (thread-safe, 8 tests)
+Thread-safe (`sync.RWMutex`). Idempotent saves. Defensive copies on list.
 
-Interface:
-```go
-type Store interface {
-    SaveTransaction(Transaction) error
-    SaveTransactions([]Transaction) error
-    GetTransaction(id string) (Transaction, bool)
-    ListTransactions(filter TxnFilter) []Transaction
-    SaveSettlement(SettlementRecord) error
-    FindSettlement(txnID string, acquirer Acquirer) (SettlementRecord, bool)
-    ListSettlements(filter SettlementFilter) []SettlementRecord
-}
+- [x] `TestStoreSavesAndRetrievesTransaction`
+- [x] `TestStoreSavesAndRetrievesSettlement`
+- [x] `TestStoreDuplicateTransactionIsIdempotent`
+- [x] `TestStoreDuplicateSettlementIsIdempotent`
+- [x] `TestStoreConcurrentSaveAndRead` — 50 writers + 50 readers, race-clean
+- [x] `TestStoreFindSettlementReturnsFalseWhenMissing`
+- [x] `TestStoreReturnedSlicesDoNotMutateInternal`
+
+### C.2 Reconciliation (`internal/reconcile/reconcile.go`)
+
+Signature: `func Reconcile(txns, settlements, asOf) Result` returning `Reconciled []ReconciledTransaction` + `Discrepancies []Discrepancy`.
+
+- [x] `TestReconcileMarksMatchedAsSettled`
+- [x] `TestReconcileCarriesGrossFeeNet` — settled record carries amounts
+- [x] `TestReconcileMarksFutureExpectedAsPending`
+- [x] `TestReconcileMarksPastDueAsOverdue`
+- [x] `TestReconcileAsOfBeforeTxnDoesNotMarkOverdue`
+- [x] `TestReconcileFlagsUnknownSettlementAsDiscrepancy`
+- [x] `TestReconcileFlagsAcquirerMismatch`
+- [x] `TestReconcileFlagsAmountMismatch`
+- [x] `TestReconcileFlagsDuplicateSettlement` — first-row-wins, single discrepancy with count
+- [x] `TestReconcileFlagsTripleDuplicateOnce` — 3 dups → 1 discrepancy with `"3 times"` in detail
+
+---
+
+## Module D: Query Service (`internal/query/`)
+
+- [x] `TestExpectedCashByAcquirerSumsNet`
+- [x] `TestExpectedCashEmptyReturnsEmptyGroups`
+- [x] `TestUnsettledSinceFiltersByDays`
+- [x] `TestUnsettledRejectsNegativeDays`
+- [x] `TestFeesByAcquirerForMonth`
+- [x] `TestFeesRejectsInvalidMonthFormat`
+- [x] `TestFeesUsesBangkokMonthBoundaries`
+- [x] `TestSettledSinceReturnsMatchedTxns`
+
+---
+
+## Module E: HTTP API (`internal/api/`, `cmd/server/`)
+
+Routes:
 ```
-
-Implementation uses `sync.RWMutex`.
-
-Tests:
-- [ ] `TestStoreSavesAndRetrievesTransaction`
-- [ ] `TestStoreSavesAndRetrievesSettlement`
-- [ ] `TestStoreDuplicateTransactionIsIdempotent` — same ID twice → 1 record (P0)
-- [ ] `TestStoreDuplicateSettlementIsIdempotent` — same `(txnID, acquirer)` → 1 record (P0)
-- [ ] `TestStoreConcurrentSaveAndRead` — 100 goroutines save + read, no race under `-race` (P0)
-- [ ] `TestStoreFiltersTransactionsByDateRange`
-- [ ] `TestStoreFiltersTransactionsByAcquirer`
-- [ ] `TestStoreReturnedSlicesDoNotMutateInternal` — modifying returned slice doesn't affect store state (P1)
-
-### C.2 — Reconciliation (9 tests)
-
-Signature: `func Reconcile(txns []Transaction, settlements []SettlementRecord, asOf time.Time) ReconcileResult`
-
-`ReconcileResult` contains `[]ReconciledTransaction` + `[]Discrepancy`.
-
-Tests:
-- [ ] `TestReconcileMarksMatchedAsSettled` — txn + matching settlement → settled
-- [ ] `TestReconcileCarriesGrossFeeNet` — settled record carries amounts
-- [ ] `TestReconcileMarksFutureExpectedAsPending` — no settlement + expected > asOf → pending
-- [ ] `TestReconcileMarksPastDueAsOverdue` — no settlement + expected ≤ asOf → overdue
-- [ ] `TestReconcileFlagsUnknownSettlementAsDiscrepancy` — settlement for unknown txn (P0)
-- [ ] `TestReconcileFlagsAcquirerMismatch` — settlement acquirer ≠ txn acquirer → discrepancy (P0)
-- [ ] `TestReconcileFlagsAmountMismatch` — gross ≠ txn amount → discrepancy (P0)
-- [ ] `TestReconcileFlagsDuplicateSettlement` — same `(txnID, acquirer)` seen twice → discrepancy (P0)
-- [ ] `TestReconcileAsOfBeforeTxnDoesNotMarkOverdue` — asOf < txnDate → pending (P1)
-
-**C total: 17 tests**
-
----
-
-## Module D: Query Service (main agent, after C)
-
-Path: `internal/query/`
-
-Signatures:
-```go
-ExpectedCashByAcquirer(date time.Time) QueryResult
-UnsettledSince(days int, asOf time.Time) []ReconciledTransaction
-FeesByAcquirer(month string) QueryResult  // "2026-04"
-Overdue(asOf time.Time) []ReconciledTransaction
-```
-
-All dates use Bangkok TZ boundaries.
-
-### Tests (7)
-
-- [ ] `TestExpectedCashByAcquirerSumsNet` — multiple settlements on date → sum by acquirer
-- [ ] `TestExpectedCashEmptyReturnsEmptyGroups` — no settlements that day → empty array, not null (P1)
-- [ ] `TestUnsettledSinceFiltersByDays` — only past N days
-- [ ] `TestUnsettledRejectsNegativeDays` — days=-1 → error (P0)
-- [ ] `TestFeesByAcquirerForMonth` — sums fees per acquirer for YYYY-MM
-- [ ] `TestFeesRejectsInvalidMonthFormat` — "2026/04" → error (P0)
-- [ ] `TestFeesUsesBangkokMonthBoundaries` — txn on Apr 30 23:59 Bangkok → counts as April (P0)
-
----
-
-## Module E: HTTP API (main agent, after D)
-
-Path: `internal/api/` + `cmd/server/`
-
-Endpoints:
-```
-POST /ingest/transactions                   — CSV body
-POST /ingest/settlements/:acquirer          — CSV or JSON based on acquirer
-GET  /queries/cashflow?date=YYYY-MM-DD      — default: tomorrow Bangkok
-GET  /queries/unsettled?days=7
-GET  /queries/fees?month=YYYY-MM
-GET  /queries/overdue?as_of=YYYY-MM-DD      — default: now Bangkok
 GET  /health
+POST /ingest/transactions
+POST /ingest/settlements/:acquirer
+GET  /queries/cashflow?date=YYYY-MM-DD          (default: tomorrow Bangkok)
+GET  /queries/unsettled?days=7&as_of=...
+GET  /queries/fees?month=YYYY-MM
+GET  /queries/overdue?as_of=...
+GET  /queries/settled?days=7&as_of=...
+GET  /queries/anomalies                          (stretch A)
+GET  /queries/forecast?days=7&as_of=...          (stretch B)
 ```
 
-Error shape:
-```json
-{"error": "invalid_settlement_file", "message": "..."}
-```
+Error shape: `{"error":"<code>","message":"<detail>"}`.
 
-### Tests (8)
-
-- [ ] `TestHealthReturnsOK` — GET /health → 200
-- [ ] `TestIngestSettlementsDispatchesToParser` — POST ThaiAcquirer CSV → parsed + stored
-- [ ] `TestIngestRejectsUnknownAcquirerPath` — `/ingest/settlements/FakeAcquirer` → 400 (P0)
-- [ ] `TestIngestMalformedFileReturnsStructuredError` — broken CSV → 400 with shape (P0)
-- [ ] `TestIngestSameFileTwiceIsIdempotent` — 2 identical POSTs → no duplicate records (P0)
-- [ ] `TestQueriesRejectsBadDateParam` — `?date=foo` → 400 (P0)
-- [ ] `TestQueriesUnsettledReturnsCorrectShape` — has `unsettled_transactions` array with expected fields
-- [ ] `TestQueriesCashflowDefaultsToBangkokTomorrow` — no `?date=` → tomorrow Bangkok (P0)
+- [x] `TestHealthReturnsOK`
+- [x] `TestIngestSettlementsDispatchesToParser` — Thai CSV + PromptPay JSON via correct parser
+- [x] `TestIngestRejectsUnknownAcquirerPath`
+- [x] `TestIngestMalformedFileReturnsStructuredError`
+- [x] `TestIngestSameFileTwiceIsIdempotent`
+- [x] `TestQueriesRejectsBadDateParam`
+- [x] `TestQueriesUnsettledReturnsCorrectShape`
+- [x] `TestQueriesCashflowDefaultsToBangkokTomorrow`
+- [x] `TestQueriesSettledRejectsBadDays`
+- [x] `TestQueriesForecastRejectsBadDays`
 
 ---
 
-## Module F: Test Data Generator (subagent-D, starts IMMEDIATELY — no Domain dep)
+## Module F: Test Data Generator (`cmd/gen-testdata/`)
 
-Path: `cmd/gen-testdata/` (standalone — writes raw files, doesn't import `internal/domain`)
+Deterministic `seed=42`. Produces 300 txns + 70 entries per settlement file. Settlement dates use `schedule.ExpectedSettlementDate` for correctness.
 
-Outputs to `project/data/`:
-- `transactions.csv` — 300 txns
-- `settlements/thai_acquirer.csv`
-- `settlements/global_pay.csv`
-- `settlements/promptpay.json`
-
-### Tests (3)
-
-- [ ] `TestGenerationIsDeterministicWithSeed` — same seed → identical output
-- [ ] `TestGeneratesExactly300Transactions`
-- [ ] `TestSettlementFilesCoverMixedStatus` — each settlement file has ≥1 settled + ≥1 missing (reconcile later flags pending/overdue)
-
-Generation rules:
-- Fixed seed `42`
-- 300 txns over past 30 days
-- 100 per acquirer
-- Amounts 100-50000 THB
-- 70% settled / 20% pending / 10% overdue
-- Each settlement file: 50-100 entries (some txns have no settlement)
+- [x] `TestGenerationIsDeterministicWithSeed`
+- [x] `TestGeneratesExactly300Transactions`
+- [x] `TestEachSettlementFileHas70Entries`
+- [x] `TestPromptPayJSONEmitsNumericAmount`
 
 ---
 
-## Module G: Integration Test (main agent, Sprint 5)
+## Module G: Integration (`cmd/server/integration_test.go`)
 
-Path: `cmd/server/integration_test.go`
+End-to-end pipeline test: ingest 3 settlement files → reconcile → query cashflow + fees + overdue.
 
-### Tests (1 — most important)
-
-- [ ] `TestEndToEndPipeline`
-  - Load 6 hand-crafted txns (2 per acquirer)
-  - Ingest 3 settlement files with 3 settled rows (1 per acquirer) + 1 overdue
-  - Reconcile asOf fixed date
-  - Assert: 3 settled / 1 pending / 2 overdue / fees grouped correctly / cashflow for date correct
+- [x] `TestEndToEndPipeline`
 
 ---
 
-## Stretch: Fee Anomaly Detection (only if time)
+## Stretch A: Fee Anomaly Detection (`internal/anomaly/`)
 
-Path: `internal/anomaly/`
+`func ExpectedFee(acquirer, grossMinor) (int64, error)` per acquirer rule.
+`func Detect([]SettlementRecord) []Anomaly` flags actual vs expected fee deviations.
 
-- [ ] `TestAnomalyFlagsFeeAboveThreshold` — expected 2.5%, actual 5% → flagged
-
-Reuses fee rules from schedule/parser modules. Low cost if core done.
-
----
-
-## Refined Counts
-
-| Module | Tests | Priority |
-|--------|-------|----------|
-| 0 Domain | 5 | P0 |
-| A Schedule | 10 | P0 |
-| B Ingest (3 parsers + dispatcher) | 22 | P0 |
-| C Store + Reconcile | 17 | P0 |
-| D Query | 7 | P0 |
-| E HTTP | 8 | P0 |
-| F Generator | 3 | P0 (fixtures are scored) |
-| G Integration | 1 | P0 (critical) |
-| **Core Total** | **73** | |
-| Stretch | 1 | P2 |
-
-**Realistic cuts if behind schedule:**
-- B.3 JSON tier boundary (merge into one `TestPromptJSONFeeByAmount` parametric test)
-- C.1 `TestStoreFiltersByDateRange` / `ByAcquirer` — inline in query tests
-- C.2 `TestReconcileAsOfBeforeTxnDoesNotMarkOverdue` — skip (rare)
-- C.1 `TestStoreReturnedSlicesDoNotMutateInternal` — skip (defensive)
-- E individual endpoint tests — cover via G integration
-
-**Realistic achievable: ~55-60 tests + integration.**
+- [x] `TestExpectedFeeThaiAcquirer` — gross 1000 THB → fee 25 THB (2.5%)
+- [x] `TestExpectedFeeGlobalPay` — gross 1000 THB → fee 30 THB (`10 + 2%`)
+- [x] `TestExpectedFeePromptPayTiers` — boundary cases at 4999.99 / 5000 / 20000 / 20000.01 THB
+- [x] `TestDetectFlagsAnomaly` — 1 normal + 1 with double fee → 1 critical anomaly
 
 ---
 
-## Parallelism Plan (Refined from Codex Feedback)
+## Stretch B: Settlement Forecast (`internal/forecast/`)
 
-Key insight from codex: Domain does NOT need to be fully frozen before work starts. Schedule + data gen + parser drafting can begin immediately.
+`func Forecast(reconcile.Result, asOf, days) Result` — predicted daily cash inflow from pending txns over the next 1–14 days, grouped by acquirer.
 
-### Sprint 1 (T+20-35, 15 min)
-
-```
-T+20-21:  Agree on Domain interface stubs (Acquirer enum, Transaction+SettlementRecord shape) in ~1 min
-T+21:     Spawn ALL 4 subagents in parallel:
-  - subagent-A: Schedule (only needs Acquirer enum)
-  - subagent-B: Parsers (needs Transaction + SettlementRecord shape — frozen above)
-  - subagent-C: Store + Reconcile (needs all types — builds them as impl proceeds, converges with main at T+30)
-  - subagent-D: Data generator (NO domain dep — writes raw files)
-T+21-29:  Main agent completes Domain module in parallel (8 min)
-T+29-35:  Main merges subagent output; resolves any type mismatches
-```
-
-**Write ownership (strict — codex insisted):**
-- subagent-A: `internal/schedule/**` only
-- subagent-B: `internal/ingest/**` only
-- subagent-C: `internal/store/**` + `internal/reconcile/**` only
-- subagent-D: `cmd/gen-testdata/**` + `data/**` only
-- main: `internal/domain/**` + `internal/query/**` + `internal/api/**` + `cmd/server/**` + `go.mod`
-
-**Ambiguity rule:** If any subagent needs a type not yet in Domain, they stub locally + flag in progress.md. Main agent reconciles at T+35 checkpoint.
-
-### Sprints 2-4 (sequential — shared state)
-
-Main agent owns Query + HTTP. Subagents pause. Reconcile + Query + HTTP share unsettled/status semantics — codex warned these should NOT fan out.
+- [x] `TestForecastIncludesFuturePending`
+- [x] `TestForecastSkipsOverdueAndSettled`
+- [x] `TestForecastSkipsBeyondWindow`
 
 ---
 
-## Done Definition Per Module
+## Final Counts
 
-Module is DONE when:
-1. All listed tests exist and PASS under `go test -race ./internal/{module}/...`
-2. No compilation errors in sibling modules
-3. Committed with message `{module}: initial impl`
-4. Module state row in `progress.md` updated to `X/Y done, passing`
+| Module | Tests | Status |
+|--------|-------|--------|
+| 0 Domain | 5 | ✅ |
+| A Schedule | 10 | ✅ |
+| B Ingest (3 parsers) | 26 | ✅ |
+| C Store + Reconcile | 17 | ✅ |
+| D Query | 8 | ✅ |
+| E HTTP | 10 | ✅ |
+| F Generator | 4 | ✅ |
+| G Integration | 1 | ✅ |
+| Stretch A Anomaly | 4 | ✅ |
+| Stretch B Forecast | 3 + 1 (HTTP) | ✅ |
+| **Total** | **~89 unit tests** | **all green, race-clean** |
+
+Run: `cd project && go test -race -count=1 ./...`

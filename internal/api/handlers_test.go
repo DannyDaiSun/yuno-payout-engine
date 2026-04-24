@@ -97,6 +97,84 @@ func TestQueriesForecastRejectsBadDays(t *testing.T) {
 	}
 }
 
+// TestIngestSettlementsDispatchesToParser verifies POST to each acquirer path
+// uses the appropriate parser (CSV vs JSON) and stores records.
+func TestIngestSettlementsDispatchesToParser(t *testing.T) {
+	r := setupServer(t)
+	thaiCSV := "txn_ref,transaction_date,settlement_date,gross_amt,fee_amt,net_amt,payment_method\n" +
+		"DISPATCH_T,2026-04-20,2026-04-21,500.00,12.50,487.50,credit_card\n"
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ingest/settlements/ThaiAcquirer", strings.NewReader(thaiCSV))
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Thai dispatch: got %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"acquirer":"ThaiAcquirer"`) {
+		t.Errorf("response missing acquirer field: %s", w.Body.String())
+	}
+
+	promptJSON := `[{"transaction_id":"DISPATCH_P","txn_date":"2026-04-20T10:00:00+07:00","settle_date":"2026-04-23T10:00:00+07:00","amount":500.00,"merchant_fee":7.50,"net_payout":492.50,"channel":"promptpay"}]`
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/ingest/settlements/PromptPayProcessor", strings.NewReader(promptJSON))
+	r.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("PromptPay dispatch: got %d, body=%s", w2.Code, w2.Body.String())
+	}
+}
+
+// TestIngestMalformedFileReturnsStructuredError verifies parse failures return
+// {"error": "...", "message": "..."} structured JSON, not raw 500.
+func TestIngestMalformedFileReturnsStructuredError(t *testing.T) {
+	r := setupServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/ingest/settlements/ThaiAcquirer", strings.NewReader("broken,csv,header\nwithout,enough,cols"))
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
+	}
+	if resp.Error == "" || resp.Message == "" {
+		t.Errorf("structured error fields missing: error=%q message=%q", resp.Error, resp.Message)
+	}
+}
+
+// TestQueriesUnsettledReturnsCorrectShape verifies response includes the
+// expected top-level fields and array (even when empty).
+func TestQueriesUnsettledReturnsCorrectShape(t *testing.T) {
+	r := setupServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/queries/unsettled?days=7", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		AsOf                  string        `json:"as_of"`
+		WindowDays            int           `json:"window_days"`
+		Currency              string        `json:"currency"`
+		UnsettledTransactions []interface{} `json:"unsettled_transactions"`
+		Total                 int           `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+	if resp.WindowDays != 7 {
+		t.Errorf("window_days: got %d, want 7", resp.WindowDays)
+	}
+	if resp.Currency != "THB" {
+		t.Errorf("currency: got %q, want THB", resp.Currency)
+	}
+	if resp.UnsettledTransactions == nil {
+		t.Errorf("unsettled_transactions should be empty array, not null")
+	}
+}
+
 // TestIngestSameFileTwiceIsIdempotent verifies uploading the same Thai
 // settlements CSV twice does not double-count fees in the monthly query.
 // SaveSettlement keys by (txnID, acquirer), so re-ingesting the same file
