@@ -113,3 +113,39 @@ func TestEachSettlementFileHas70Entries(t *testing.T) {
 		t.Errorf("promptpay.json: got %d entries, want 70", len(entries))
 	}
 }
+
+// TestPromptPayJSONEmitsNumericAmount verifies that the amount, merchant_fee,
+// and net_payout fields in promptpay.json are emitted as JSON numbers
+// (which decode to float64), not as quoted strings.
+func TestPromptPayJSONEmitsNumericAmount(t *testing.T) {
+	dir := t.TempDir()
+	if err := Generate(42, dir); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	buf, err := os.ReadFile(filepath.Join(dir, "settlements", "promptpay.json"))
+	if err != nil {
+		t.Fatalf("read promptpay.json: %v", err)
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(buf, &entries); err != nil {
+		t.Fatalf("unmarshal promptpay.json: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("promptpay.json contained no entries")
+	}
+
+	numericFields := []string{"amount", "merchant_fee", "net_payout"}
+	for i, e := range entries {
+		for _, field := range numericFields {
+			v, ok := e[field]
+			if !ok {
+				t.Fatalf("entry %d missing field %q", i, field)
+			}
+			if _, isFloat := v.(float64); !isFloat {
+				t.Errorf("entry %d field %q: got %T (%v), want float64 (numeric, unquoted)", i, field, v, v)
+			}
+		}
+	}
+}

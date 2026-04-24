@@ -16,13 +16,16 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/dannydaisun/payout-engine/internal/domain"
+	"github.com/dannydaisun/payout-engine/internal/schedule"
 )
 
 // Acquirer names — must match what the engine expects.
 const (
-	acqThai      = "ThaiAcquirer"
-	acqGlobalPay = "GlobalPay"
-	acqPromptPay = "PromptPayProcessor"
+	acqThai      = string(domain.AcquirerThai)
+	acqGlobalPay = string(domain.AcquirerGlobal)
+	acqPromptPay = string(domain.AcquirerPrompt)
 )
 
 // Volume constants (spec).
@@ -157,7 +160,7 @@ func writeTransactionsCSV(path string, txns []txn) error {
 }
 
 // writeThaiCSV writes data/settlements/thai_acquirer.csv.
-// fee = 2.5%, settlement = txn_date + 1 day.
+// fee = 2.5%, settlement = next business day after txn_date (Mon-Fri).
 func writeThaiCSV(path string, txns []txn) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -172,7 +175,10 @@ func writeThaiCSV(path string, txns []txn) error {
 	for _, t := range txns {
 		fee := round2(t.Amount * 0.025)
 		net := round2(t.Amount - fee)
-		settle := t.TxnDate.AddDate(0, 0, 1)
+		settle, err := schedule.ExpectedSettlementDate(domain.AcquirerThai, t.TxnDate)
+		if err != nil {
+			return err
+		}
 		row := []string{
 			t.ID,
 			t.TxnDate.Format("2006-01-02"),
@@ -190,7 +196,7 @@ func writeThaiCSV(path string, txns []txn) error {
 }
 
 // writeGlobalPayCSV writes data/settlements/global_pay.csv.
-// payout = processed + 3 days; fee = 10 + 2% gross. Date format DD/MM/YYYY.
+// payout = next Tue/Fri window after processed; fee = 10 + 2% gross. Date format DD/MM/YYYY.
 func writeGlobalPayCSV(path string, txns []txn) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -205,7 +211,10 @@ func writeGlobalPayCSV(path string, txns []txn) error {
 	for _, t := range txns {
 		fee := round2(10 + t.Amount*0.02)
 		settled := round2(t.Amount - fee)
-		payout := t.TxnDate.AddDate(0, 0, 3)
+		payout, err := schedule.ExpectedSettlementDate(domain.AcquirerGlobal, t.TxnDate)
+		if err != nil {
+			return err
+		}
 		row := []string{
 			t.ID,
 			t.TxnDate.Format("02/01/2006"),
@@ -223,18 +232,29 @@ func writeGlobalPayCSV(path string, txns []txn) error {
 }
 
 // promptPayEntry mirrors the JSON shape required for the PromptPay file.
+// Amount fields use json.RawMessage so they marshal as numeric literals
+// (e.g. 49140.00) rather than quoted strings, while preserving the
+// fixed 2-decimal precision required by downstream parsers.
 type promptPayEntry struct {
-	TransactionID string `json:"transaction_id"`
-	TxnDate       string `json:"txn_date"`
-	SettleDate    string `json:"settle_date"`
-	Amount        string `json:"amount"`
-	MerchantFee   string `json:"merchant_fee"`
-	NetPayout     string `json:"net_payout"`
-	Channel       string `json:"channel"`
+	TransactionID string          `json:"transaction_id"`
+	TxnDate       string          `json:"txn_date"`
+	SettleDate    string          `json:"settle_date"`
+	Amount        json.RawMessage `json:"amount"`
+	MerchantFee   json.RawMessage `json:"merchant_fee"`
+	NetPayout     json.RawMessage `json:"net_payout"`
+	Channel       string          `json:"channel"`
+}
+
+// money2 returns a JSON numeric literal with exactly 2 decimal places,
+// e.g. 49140.00. The caller must ensure the input is a finite, non-negative
+// THB amount that has already been rounded to 2 decimals.
+func money2(v float64) json.RawMessage {
+	return json.RawMessage(fmt.Sprintf("%.2f", v))
 }
 
 // writePromptPayJSON writes data/settlements/promptpay.json.
 // Tiered fee: <5000 -> 1.5%, 5000-20000 -> 1.8%, >20000 -> 2.2%.
+// Settlement date follows the 3-business-day rule.
 func writePromptPayJSON(path string, txns []txn) error {
 	entries := make([]promptPayEntry, 0, len(txns))
 	for _, t := range txns {
@@ -249,14 +269,17 @@ func writePromptPayJSON(path string, txns []txn) error {
 		}
 		fee := round2(t.Amount * rate)
 		net := round2(t.Amount - fee)
-		settle := t.TxnDate.AddDate(0, 0, 3)
+		settle, err := schedule.ExpectedSettlementDate(domain.AcquirerPrompt, t.TxnDate)
+		if err != nil {
+			return err
+		}
 		entries = append(entries, promptPayEntry{
 			TransactionID: t.ID,
 			TxnDate:       t.TxnDate.Format(time.RFC3339),
 			SettleDate:    settle.Format(time.RFC3339),
-			Amount:        fmt.Sprintf("%.2f", t.Amount),
-			MerchantFee:   fmt.Sprintf("%.2f", fee),
-			NetPayout:     fmt.Sprintf("%.2f", net),
+			Amount:        money2(t.Amount),
+			MerchantFee:   money2(fee),
+			NetPayout:     money2(net),
 			Channel:       t.PaymentMethod,
 		})
 	}
