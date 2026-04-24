@@ -1,8 +1,0 @@
-services:
-  server:
-    build: .
-    command: ["/server", "-seed=/data"]
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./data:/data:ro

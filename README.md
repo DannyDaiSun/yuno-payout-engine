@@ -106,27 +106,30 @@ go run ./cmd/server -seed ./data       # boots on :8080 with fixtures pre-loaded
 ### Example Queries
 
 ```bash
-# Tomorrow's expected cash, by acquirer
-curl -s "http://localhost:8080/queries/cashflow?date=2026-04-25"
+# Expected cash on 2026-04-24, by acquirer (this date has actual settlements in the seeded fixtures)
+curl -s "http://localhost:8080/queries/cashflow?date=2026-04-24"
 # {
-#   "date": "2026-04-25",
+#   "date": "2026-04-24",
 #   "currency": "THB",
 #   "by_acquirer": [
-#     {"acquirer":"ThaiAcquirer","net_amount":"124000.50"},
-#     {"acquirer":"GlobalPay","net_amount":"87520.00"},
-#     {"acquirer":"PromptPayProcessor","net_amount":"43010.25"}
+#     {"acquirer":"ThaiAcquirer","net_amount":"89324.61"},
+#     {"acquirer":"GlobalPay","net_amount":"283302.48"},
+#     {"acquirer":"PromptPayProcessor","net_amount":"82922.67"}
 #   ],
-#   "total": "254530.75"
+#   "total": "455549.76"
 # }
 
 # Fees per acquirer for April 2026
 curl -s "http://localhost:8080/queries/fees?month=2026-04"
 
-# Anything overdue as of a specific date
-curl -s "http://localhost:8080/queries/overdue?as_of=2026-04-24"
+# Anything overdue as of a specific date (use generator's "today" 2026-04-23 for stable counts)
+curl -s "http://localhost:8080/queries/overdue?as_of=2026-04-23"
 
 # Last 7 days of unsettled transactions
-curl -s "http://localhost:8080/queries/unsettled?days=7&as_of=2026-04-24"
+curl -s "http://localhost:8080/queries/unsettled?days=7&as_of=2026-04-23"
+
+# Last 7 days of settled transactions (gross/fee/net per record)
+curl -s "http://localhost:8080/queries/settled?days=7&as_of=2026-04-23"
 
 # Upload a Thai settlement CSV
 curl -s -X POST --data-binary @data/settlements/thai_acquirer.csv \
@@ -203,5 +206,4 @@ go test -race -count=1 ./...
 
 - `SYSTEM_OVERVIEW.md` — module dependency graph, design rationale, future work
 - `TEST_CASES.md` — full test inventory grouped by sanity / regression / integration / negative
-- `AI_PROMPT_LOG.md` — AI tool usage and workflow notes
 - `behaviors.md` — original test-list (planned + implemented) used to drive the build
