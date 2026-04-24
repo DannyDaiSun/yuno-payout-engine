@@ -165,7 +165,7 @@ curl -s -X POST --data-binary @data/settlements/thai_acquirer.csv \
 - **No authentication.** Explicitly out of scope per the spec.
 - **Single currency (THB).** Codified in the parser; non-THB rows are rejected. Multi-currency would extend the money helpers.
 - **Refunds / negative amounts not modeled.** Parsers reject negatives; a refund engine is out of scope.
-- **Partial / multiple settlements per transaction not modeled.** A duplicate `(txn_id, acquirer)` is treated as idempotent at the store layer; reconciliation flags it as a discrepancy.
+- **Partial / multiple settlements per transaction not modeled.** A duplicate `(txn_id, acquirer)` is treated as an idempotent overwrite at the store layer (last write wins). Cross-file duplicate detection would need either parse-time tracking or settlement-history retention; out of scope here.
 
 ## Project Layout
 
