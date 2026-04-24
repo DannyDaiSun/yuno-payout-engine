@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/dannydaisun/payout-engine/internal/anomaly"
 	"github.com/dannydaisun/payout-engine/internal/domain"
 	"github.com/dannydaisun/payout-engine/internal/ingest"
 	"github.com/dannydaisun/payout-engine/internal/query"
@@ -31,6 +32,18 @@ func (srv *Server) Routes(r *gin.Engine) {
 	r.GET("/queries/unsettled", srv.unsettled)
 	r.GET("/queries/fees", srv.fees)
 	r.GET("/queries/overdue", srv.overdue)
+	r.GET("/queries/anomalies", srv.anomalies)
+}
+
+type AnomaliesResult struct {
+	Total     int               `json:"total"`
+	Anomalies []anomaly.Anomaly `json:"anomalies"`
+}
+
+func (srv *Server) anomalies(c *gin.Context) {
+	settlements := srv.store.ListSettlements()
+	found := anomaly.Detect(settlements)
+	c.JSON(http.StatusOK, AnomaliesResult{Total: len(found), Anomalies: found})
 }
 
 func (srv *Server) health(c *gin.Context) {
