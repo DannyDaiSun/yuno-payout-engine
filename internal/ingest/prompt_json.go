@@ -34,6 +34,9 @@ func ParsePromptJSON(r io.Reader, sourceFile string) ([]domain.SettlementRecord,
 
 	out := make([]domain.SettlementRecord, 0, len(raws))
 	for i, raw := range raws {
+		if raw.TransactionID == "" {
+			return nil, fmt.Errorf("prompt_json: record %d: transaction_id is required", i)
+		}
 		txnDate, err := time.Parse(time.RFC3339, raw.TxnDate)
 		if err != nil {
 			return nil, fmt.Errorf("prompt_json: record %d: txn_date: %w", i, err)
