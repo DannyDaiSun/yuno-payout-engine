@@ -32,6 +32,7 @@ func (srv *Server) Routes(r *gin.Engine) {
 	r.GET("/queries/unsettled", srv.unsettled)
 	r.GET("/queries/fees", srv.fees)
 	r.GET("/queries/overdue", srv.overdue)
+	r.GET("/queries/settled", srv.settled)
 	r.GET("/queries/anomalies", srv.anomalies)
 }
 
@@ -44,6 +45,31 @@ func (srv *Server) anomalies(c *gin.Context) {
 	settlements := srv.store.ListSettlements()
 	found := anomaly.Detect(settlements)
 	c.JSON(http.StatusOK, AnomaliesResult{Total: len(found), Anomalies: found})
+}
+
+func (srv *Server) settled(c *gin.Context) {
+	daysStr := c.DefaultQuery("days", "7")
+	var days int
+	if _, err := fmt.Sscanf(daysStr, "%d", &days); err != nil {
+		c.JSON(http.StatusBadRequest, errResp("invalid_days", fmt.Sprintf("days must be int: %s", daysStr)))
+		return
+	}
+	asOfStr := c.Query("as_of")
+	asOf := bangkokToday()
+	if asOfStr != "" {
+		d, err := parseBangkokDate(asOfStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, errResp("invalid_date", fmt.Sprintf("as_of must be YYYY-MM-DD: %s", asOfStr)))
+			return
+		}
+		asOf = d
+	}
+	res, err := srv.query.SettledSince(days, asOf)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errResp("invalid_days", err.Error()))
+		return
+	}
+	c.JSON(http.StatusOK, res)
 }
 
 func (srv *Server) health(c *gin.Context) {

@@ -77,6 +77,16 @@ func TestQueriesCashflowDefaultsToBangkokTomorrow(t *testing.T) {
 	}
 }
 
+func TestQueriesSettledRejectsBadDays(t *testing.T) {
+	r := setupServer(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/queries/settled?days=abc", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("got %d, want 400", w.Code)
+	}
+}
+
 // TestIngestSameFileTwiceIsIdempotent verifies uploading the same Thai
 // settlements CSV twice does not double-count fees in the monthly query.
 // SaveSettlement keys by (txnID, acquirer), so re-ingesting the same file

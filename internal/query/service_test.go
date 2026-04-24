@@ -76,6 +76,60 @@ func TestFeesByAcquirerForMonth(t *testing.T) {
 // Record A is April 30 23:30 BKK (= April 30 16:30 UTC) -- counts as April.
 // Record B is May 1 00:30 BKK (= April 30 17:30 UTC) -- counts as May.
 // If the query bucketed by UTC date, both would land in April and the test fails.
+func TestSettledSinceReturnsMatchedTxns(t *testing.T) {
+	s := store.New()
+	bk := domain.BangkokTZ()
+	asOf := time.Date(2026, 4, 24, 12, 0, 0, 0, bk)
+	day := time.Date(2026, 4, 24, 0, 0, 0, 0, bk)
+
+	// Txn 1: settled (matching settlement)
+	s.SaveTransaction(domain.Transaction{
+		ID:                 "T1",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        100000,
+		Currency:           "THB",
+		TransactionDate:    time.Date(2026, 4, 23, 0, 0, 0, 0, bk),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: day,
+	})
+	s.SaveSettlement(domain.SettlementRecord{
+		TransactionID:   "T1",
+		Acquirer:        domain.AcquirerThai,
+		GrossMinor:      100000,
+		FeeMinor:        2500,
+		NetMinor:        97500,
+		Currency:        "THB",
+		TransactionDate: time.Date(2026, 4, 23, 0, 0, 0, 0, bk),
+		SettlementDate:  day,
+		PaymentMethod:   domain.MethodCreditCard,
+	})
+	// Txn 2: no matching settlement
+	s.SaveTransaction(domain.Transaction{
+		ID:                 "T2",
+		Acquirer:           domain.AcquirerThai,
+		AmountMinor:        50000,
+		Currency:           "THB",
+		TransactionDate:    time.Date(2026, 4, 23, 0, 0, 0, 0, bk),
+		PaymentMethod:      domain.MethodCreditCard,
+		ExpectedSettleDate: day,
+	})
+
+	q := New(s)
+	res, err := q.SettledSince(7, asOf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Total != 1 {
+		t.Errorf("got total %d, want 1", res.Total)
+	}
+	if len(res.SettledTransactions) != 1 || res.SettledTransactions[0].ID != "T1" {
+		t.Errorf("expected T1 in settled list, got %+v", res.SettledTransactions)
+	}
+	if res.SettledTransactions[0].NetAmount != "975.00" {
+		t.Errorf("got net %q, want 975.00", res.SettledTransactions[0].NetAmount)
+	}
+}
+
 func TestFeesUsesBangkokMonthBoundaries(t *testing.T) {
 	s := store.New()
 	bk := domain.BangkokTZ()

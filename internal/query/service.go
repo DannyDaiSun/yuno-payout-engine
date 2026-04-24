@@ -158,6 +158,65 @@ func (s *Service) FeesByAcquirer(month string) (FeesResult, error) {
 	}, nil
 }
 
+type SettledTransaction struct {
+	ID              string               `json:"id"`
+	Acquirer        domain.Acquirer      `json:"acquirer"`
+	GrossAmount     string               `json:"gross_amount"`
+	Fee             string               `json:"fee"`
+	NetAmount       string               `json:"net_amount"`
+	TransactionDate string               `json:"transaction_date"`
+	SettlementDate  string               `json:"settlement_date"`
+	PaymentMethod   domain.PaymentMethod `json:"payment_method"`
+}
+
+type SettledResult struct {
+	AsOf                string               `json:"as_of"`
+	WindowDays          int                  `json:"window_days"`
+	Currency            string               `json:"currency"`
+	SettledTransactions []SettledTransaction `json:"settled_transactions"`
+	Total               int                  `json:"total"`
+}
+
+// SettledSince returns settled transactions whose transaction date is within the window.
+func (s *Service) SettledSince(days int, asOf time.Time) (SettledResult, error) {
+	if days <= 0 {
+		return SettledResult{}, ErrInvalidDays
+	}
+	asOfDay := domain.BangkokMidnight(asOf)
+	cutoff := asOfDay.AddDate(0, 0, -days)
+	r := reconcile.Reconcile(s.store.ListTransactions(), s.store.ListSettlements(), asOf)
+	out := make([]SettledTransaction, 0)
+	for _, rt := range r.Reconciled {
+		if rt.Status != domain.StatusSettled {
+			continue
+		}
+		if rt.Settlement == nil {
+			continue
+		}
+		txnDay := domain.BangkokMidnight(rt.Transaction.TransactionDate)
+		if txnDay.Before(cutoff) {
+			continue
+		}
+		out = append(out, SettledTransaction{
+			ID:              rt.Transaction.ID,
+			Acquirer:        rt.Transaction.Acquirer,
+			GrossAmount:     domain.FormatMinorUnits(rt.Settlement.GrossMinor),
+			Fee:             domain.FormatMinorUnits(rt.Settlement.FeeMinor),
+			NetAmount:       domain.FormatMinorUnits(rt.Settlement.NetMinor),
+			TransactionDate: txnDay.Format("2006-01-02"),
+			SettlementDate:  domain.BangkokMidnight(rt.Settlement.SettlementDate).Format("2006-01-02"),
+			PaymentMethod:   rt.Transaction.PaymentMethod,
+		})
+	}
+	return SettledResult{
+		AsOf:                asOfDay.Format("2006-01-02"),
+		WindowDays:          days,
+		Currency:            "THB",
+		SettledTransactions: out,
+		Total:               len(out),
+	}, nil
+}
+
 type OverdueResult struct {
 	AsOf      string                 `json:"as_of"`
 	Currency  string                 `json:"currency"`
